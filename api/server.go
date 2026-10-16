@@ -189,6 +189,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/auth/entra/start", s.handleEntraStart)
 	mux.HandleFunc("GET /api/v1/auth/entra/callback", s.handleEntraCallback)
 	mux.HandleFunc("GET /api/v1/me", s.handleMe)
+	mux.Handle("POST /api/v1/me/password", a.Require(auth.PermSearch, http.HandlerFunc(s.handleChangeOwnPassword)))
 	// /health is public but only reveals up/down; detail needs a signed-in user.
 	mux.HandleFunc("GET /health", s.handleHealth)
 	mux.Handle("GET /", web.Handler())
@@ -509,13 +510,20 @@ type sessionInfo struct {
 	Sources []int64   `json:"sources"`
 	AI      ai.Status `json:"ai"`
 	Version string    `json:"version,omitempty"`
+	// AuthProvider is how the account signs in: "local" (a password) or
+	// "entra" (Microsoft).
+	AuthProvider string `json:"auth_provider"`
 }
 
-func (s *Server) session(username, role string, limited bool, sources []int64) sessionInfo {
+func (s *Server) session(username, role string, limited bool, sources []int64, provider string) sessionInfo {
 	if sources == nil || role == auth.RoleAdmin {
 		sources = []int64{}
 	}
-	return sessionInfo{Username: username, Role: role, Limited: limited && role != auth.RoleAdmin, Sources: sources, AI: s.deps.AI.Status(), Version: s.deps.Version}
+	if provider == "" {
+		provider = storage.ProviderLocal
+	}
+	return sessionInfo{Username: username, Role: role, Limited: limited && role != auth.RoleAdmin, Sources: sources, AI: s.deps.AI.Status(),
+		Version: s.deps.Version, AuthProvider: provider}
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -560,7 +568,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if full, err := s.deps.Repo.GetUser(r.Context(), user.ID); err == nil {
 		limited, sources = full.Limited, full.Sources
 	}
-	writeJSON(w, http.StatusOK, s.session(user.Username, user.Role, limited, sources))
+	writeJSON(w, http.StatusOK, s.session(user.Username, user.Role, limited, sources, user.AuthProvider))
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -683,7 +691,51 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not signed in")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.session(p.Name, p.Role, p.Limited, p.Sources))
+	provider := ""
+	if u, err := s.deps.Repo.GetUser(r.Context(), p.UserID); err == nil {
+		provider = u.AuthProvider
+	}
+	writeJSON(w, http.StatusOK, s.session(p.Name, p.Role, p.Limited, p.Sources, provider))
+}
+
+// handleChangeOwnPassword lets a signed-in user change their own password.
+// Their other sessions end; this one carries on with a new cookie.
+func (s *Server) handleChangeOwnPassword(w http.ResponseWriter, r *http.Request) {
+	p := auth.FromContext(r.Context())
+	if p == nil || p.Kind != auth.KindUser {
+		writeError(w, http.StatusForbidden, "only people can change a password")
+		return
+	}
+	var req struct {
+		Current string `json:"current_password"`
+		New     string `json:"new_password"`
+	}
+	if !decodeJSON(w, r, &req, 4<<10) {
+		return
+	}
+	token, err := s.deps.Auth.ChangeOwnPassword(r.Context(), s.clientIP(r), p.UserID, req.Current, req.New)
+	switch {
+	case errors.Is(err, auth.ErrTooManyAttempts):
+		w.Header().Set("Retry-After", "900")
+		writeError(w, http.StatusTooManyRequests, err.Error())
+		return
+	case errors.Is(err, auth.ErrWrongPassword):
+		s.audit(r, audit.Entry{Action: "user.password.self", Class: audit.AccountChange, Severity: 3,
+			Message: p.Name + " tried to change their password, but the current password was wrong", Fields: map[string]string{"target": p.Name, "result": "failed"}})
+		writeError(w, http.StatusBadRequest, "The current password is wrong.")
+		return
+	case errors.Is(err, auth.ErrNoPassword):
+		writeError(w, http.StatusBadRequest, "This account signs in with Microsoft, so its password is managed by your organization.")
+		return
+	case err != nil:
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	auth.SetSessionCookie(w, token)
+	s.deps.Logger.Info("password changed by its owner", "user", p.Name)
+	s.audit(r, audit.Entry{Action: "user.password.self", Class: audit.AccountChange, Severity: 2,
+		Message: p.Name + " changed their own password; their other sessions were ended", Fields: map[string]string{"target": p.Name}})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "password changed; you were signed out everywhere else"})
 }
 
 type healthResponse struct {

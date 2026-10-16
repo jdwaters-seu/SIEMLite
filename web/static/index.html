@@ -108,9 +108,17 @@
   .theme { display: grid; grid-template-columns: repeat(3, 1fr); padding: 2px; margin: 0 10px; border: 1px solid var(--rule); border-radius: 7px; }
   .theme button { border: 0; background: none; border-radius: 5px; padding: 4px 0; color: var(--ink-2); cursor: pointer; font-size: 12.5px; }
   .theme button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: 0 0 0 1px var(--rule); }
-  .account { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 12px 10px 0; border-top: 1px solid var(--rule); }
-  .account b { display: block; font-weight: 600; }
-  .account span { color: var(--ink-2); }
+  .account { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-top: 4px; border-radius: 6px;
+             color: var(--ink); text-decoration: none; box-shadow: 0 -12px 0 -11px var(--rule); }
+  .account:hover, .account[aria-current="page"] { background: var(--raised); }
+  .account b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .avatar { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: var(--paper);
+            font-size: 12.5px; font-weight: 700; text-transform: uppercase; }
+  .account-grid { display: grid; gap: 16px; max-width: 760px; }
+  .account-grid .panel h2 { margin-bottom: 4px; }
+  .account-grid .theme { margin: 10px 0 0; max-width: 300px; }
+  .pw-form { display: grid; gap: 12px; margin-top: 12px; max-width: 360px; }
+  .pw-form .input { width: 100%; }
 
   .main { min-width: 0; padding: 0 40px 48px; }
   .mobile-bar { display: none; }
@@ -457,15 +465,9 @@
     </nav>
     <div class="side-foot">
       <div id="status" aria-live="polite"></div>
-      <div class="theme" role="group" aria-label="Theme">
-        <button type="button" data-theme-choice="system">System</button>
-        <button type="button" data-theme-choice="light">Light</button>
-        <button type="button" data-theme-choice="dark">Dark</button>
-      </div>
-      <div class="account">
-        <div><b id="who-name"></b><span id="who-role"></span></div>
-        <button class="link-btn" id="logout">Sign out</button>
-      </div>
+      <a class="account" href="#/account" data-nav="account" title="Your account">
+        <span class="avatar" id="who-initial" aria-hidden="true"></span><b id="who-name"></b>
+      </a>
     </div>
   </aside>
 
@@ -879,6 +881,41 @@
       </section>
     </section>
 
+    <!-- Account -->
+    <section id="view-account" class="page" aria-labelledby="account-title" hidden>
+      <div class="page-head">
+        <div><h1 id="account-title">Account</h1><p id="account-sub"></p></div>
+        <div class="page-actions"><button class="btn" id="logout">Sign out</button></div>
+      </div>
+      <div class="account-grid">
+        <section class="panel" aria-labelledby="acct-role-title">
+          <h2 id="acct-role-title">Role</h2>
+          <p class="hint"><span class="pill" id="acct-role"></span> <span id="acct-role-text"></span></p>
+        </section>
+        <section class="panel" aria-labelledby="acct-theme-title">
+          <h2 id="acct-theme-title">Theme</h2>
+          <p class="hint">Follow your system's light or dark setting, or choose one. It's remembered on this browser.</p>
+          <div class="theme" role="group" aria-label="Theme">
+            <button type="button" data-theme-choice="system">System</button>
+            <button type="button" data-theme-choice="light">Light</button>
+            <button type="button" data-theme-choice="dark">Dark</button>
+          </div>
+        </section>
+        <section class="panel" aria-labelledby="acct-auth-title">
+          <h2 id="acct-auth-title">Sign-in</h2>
+          <p class="hint" id="acct-auth-text"></p>
+          <form class="pw-form" id="pw-form" autocomplete="on" hidden>
+            <input type="text" autocomplete="username" id="pw-user" hidden>
+            <label class="field-label">Current password <input class="input" type="password" id="pw-current" autocomplete="current-password" required></label>
+            <label class="field-label">New password <span class="muted">(at least 12 characters)</span><input class="input" type="password" id="pw-new" autocomplete="new-password" minlength="12" required></label>
+            <label class="field-label">New password again <input class="input" type="password" id="pw-again" autocomplete="new-password" minlength="12" required></label>
+            <div><button class="btn btn-primary" type="submit" id="pw-save">Change password</button></div>
+            <p class="notice" id="pw-msg" role="status" hidden></p>
+          </form>
+        </section>
+      </div>
+    </section>
+
     <!-- System -->
     <section id="view-system" class="page" aria-labelledby="system-title" hidden>
       <div class="page-head">
@@ -1246,7 +1283,7 @@ function applySession(s) {
   $("ver").textContent = s.version || "";
   for (const n of document.querySelectorAll(".alerts-nav")) n.hidden = !!s.limited;
   $("who-name").textContent = s.username;
-  $("who-role").textContent = isAdmin ? "Admin" : "Standard";
+  $("who-initial").textContent = (s.username || "?").trim().charAt(0);
   for (const n of document.querySelectorAll(".admin-only")) n.hidden = !isAdmin;
 }
 $("login-form").onsubmit = async (e) => {
@@ -1276,7 +1313,7 @@ $("logout").onclick = async () => {
 };
 
 // --- Routing: #/page or #/page?query ---
-const VIEWS = ["dashboard", "database", "alerts", "users", "sources", "parsers", "parser", "integrations", "system"];
+const VIEWS = ["dashboard", "database", "alerts", "users", "sources", "parsers", "parser", "integrations", "system", "account"];
 function route() {
   const [path, query] = location.hash.replace(/^#\/?/, "").split("?");
   let [view, arg] = path.split("/");
@@ -1292,8 +1329,8 @@ function route() {
   setMenu(false);
   const params = new URLSearchParams(query || "");
   ({ dashboard: openDashboard, database: () => openDatabase(params), users: openUsers, sources: openSources,
-     parsers: openParsers, parser: () => openParserEditor(arg), integrations: openIntegrations, system: openSystem, alerts: () => openAlerts(params) })[view]();
-  document.title = `${({ dashboard: "Dashboard", database: "Database", users: "Users", sources: "Sources", parsers: "Parsers", parser: "Parser", integrations: "Integrations", system: "System", alerts: "Alerts" })[view]} · SIEMLite`;
+     parsers: openParsers, parser: () => openParserEditor(arg), integrations: openIntegrations, system: openSystem, account: openAccount, alerts: () => openAlerts(params) })[view]();
+  document.title = `${({ dashboard: "Dashboard", database: "Database", users: "Users", sources: "Sources", parsers: "Parsers", parser: "Parser", integrations: "Integrations", system: "System", account: "Account", alerts: "Alerts" })[view]} · SIEMLite`;
   if (view !== "system") { clearTimeout(backupPoll); clearTimeout(tlsPoll); }
 }
 window.addEventListener("hashchange", () => { if (me) route(); });
@@ -1733,6 +1770,46 @@ function confirmAction(title, body, ok) {
     d.returnValue = ""; d.showModal();
   });
 }
+
+// --- Account ---
+async function openAccount() {
+  $("account-sub").textContent = `Signed in as ${me.username}.`;
+  $("acct-role").textContent = me.role === "admin" ? "Admin" : "Standard";
+  $("acct-role").classList.toggle("on", me.role === "admin");
+  let text = me.role === "admin" ? "Everything, including users, sources, parsers, integrations and system settings." :
+    "Search the Database, see the Dashboard" + (me.limited ? "." : " and Alerts.");
+  if (me.role !== "admin") {
+    if (!me.limited) text += " You see events from every source.";
+    else {
+      text += " You see events only from some sources";
+      try {
+        const names = (await apiJSON("/api/v1/sources")).map((s) => s.name).filter(Boolean);
+        text += names.length ? `: ${names.join(", ")}.` : ", and none are set yet.";
+      } catch { text += "."; }
+    }
+    text += " An admin can change this.";
+  }
+  $("acct-role-text").textContent = text;
+  const microsoft = me.auth_provider === "entra";
+  $("acct-auth-text").textContent = microsoft
+    ? "This account belongs to Microsoft Entra ID: you sign in with your work account, and its password is managed by your organization. Who may sign in is decided by an Entra group."
+    : "This is a local SIEMLite account: you sign in with a password kept here. Changing it signs you out on every other browser.";
+  $("pw-form").hidden = microsoft;
+  $("pw-user").value = me.username;
+  for (const id of ["pw-current", "pw-new", "pw-again"]) $(id).value = "";
+  notice($("pw-msg"), "");
+}
+$("pw-form").onsubmit = async (e) => {
+  e.preventDefault();
+  if ($("pw-new").value !== $("pw-again").value) { notice($("pw-msg"), "The new passwords don't match."); $("pw-again").focus(); return; }
+  $("pw-save").disabled = true;
+  try {
+    await apiJSON("/api/v1/me/password", { method: "POST", json: { current_password: $("pw-current").value, new_password: $("pw-new").value } });
+    for (const id of ["pw-current", "pw-new", "pw-again"]) $(id).value = "";
+    notice($("pw-msg"), "Password changed. You were signed out on every other browser.", true);
+  } catch (err) { notice($("pw-msg"), err.message); }
+  $("pw-save").disabled = false;
+};
 
 // --- Users ---
 let usersCache = [];

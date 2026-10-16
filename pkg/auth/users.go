@@ -175,6 +175,53 @@ func (a *Authenticator) Login(ctx context.Context, remote, username, password st
 	return token, u, nil
 }
 
+// ErrWrongPassword means the current password given to ChangeOwnPassword is wrong.
+var ErrWrongPassword = errors.New("the current password is wrong")
+
+// ErrNoPassword means the account signs in elsewhere (such as Microsoft) and has no password here.
+var ErrNoPassword = errors.New("this account signs in with Microsoft, so its password is managed by your organization")
+
+// ChangeOwnPassword lets a signed-in user change their password: the current
+// one must be right (checked with the same per-address and per-account limits
+// as signing in). Every session of the account ends, and a new one is started
+// for the caller, whose cookie should be set to the returned token.
+func (a *Authenticator) ChangeOwnPassword(ctx context.Context, remote string, userID int64, current, next string) (token string, err error) {
+	u, err := a.repo.GetUser(ctx, userID)
+	if err != nil {
+		return "", err
+	}
+	if u.AuthProvider != storage.ProviderLocal {
+		return "", ErrNoPassword
+	}
+	account := strings.ToLower(u.Username)
+	if !a.limiter.allow(remote) || !a.accounts.allow(account) {
+		return "", ErrTooManyAttempts
+	}
+	_, hash, err := a.repo.GetUserForLogin(ctx, u.Username)
+	if err != nil {
+		return "", err
+	}
+	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
+		a.limiter.fail(remote)
+		a.accounts.fail(account)
+		a.log.Warn("password change refused: wrong current password", "user", u.Username, "remote", remote)
+		return "", ErrWrongPassword
+	}
+	a.limiter.reset(remote)
+	a.accounts.reset(account)
+	if current == next {
+		return "", errors.New("choose a password different from the current one")
+	}
+	if err := SetPassword(ctx, a.repo, u.Username, next); err != nil { // also ends every session
+		return "", err
+	}
+	if token, err = a.StartSession(ctx, u); err != nil {
+		return "", err
+	}
+	a.log.Info("password changed by its owner", "user", u.Username)
+	return token, nil
+}
+
 // StartSession begins a session for a user who has already been verified, by
 // password in Login or by single sign-on, and returns the cookie's token. It
 // refuses a disabled account.
