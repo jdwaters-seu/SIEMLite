@@ -36,6 +36,8 @@ const password = "correct horse battery"
 type env struct {
 	t      *testing.T
 	srv    *httptest.Server
+	local  *httptest.Server // the same server's local port
+	api    *api.Server
 	repo   *storage.Repository
 	worker *ingest.Worker
 	alerts *alerts.Engine
@@ -85,9 +87,12 @@ func newEnvWith(t *testing.T, change func(*api.Deps)) *env {
 	if change != nil {
 		change(&deps)
 	}
-	srv := httptest.NewTLSServer(api.NewServer("", deps).Handler())
+	s := api.NewServer("", deps)
+	srv := httptest.NewTLSServer(s.Handler())
 	t.Cleanup(srv.Close)
-	return &env{t: t, srv: srv, repo: repo, worker: worker, alerts: engine, ms: ms, deps: deps}
+	local := httptest.NewTLSServer(s.LocalHandler()) // the local port (signin.go)
+	t.Cleanup(local.Close)
+	return &env{t: t, srv: srv, local: local, api: s, repo: repo, worker: worker, alerts: engine, ms: ms, deps: deps}
 }
 
 func (e *env) user(name, role string) {

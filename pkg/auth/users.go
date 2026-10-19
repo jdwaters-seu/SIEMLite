@@ -138,6 +138,9 @@ func spendHashTime(password string) {
 func (a *Authenticator) Login(ctx context.Context, remote, username, password string) (token string, user *storage.User, err error) {
 	username = strings.TrimSpace(username)
 	account := strings.ToLower(username)
+	if err := a.passwordAllowed(ctx, username); err != nil {
+		return "", nil, err
+	}
 	if !a.limiter.allow(remote) || !a.accounts.allow(account) {
 		return "", nil, ErrTooManyAttempts
 	}

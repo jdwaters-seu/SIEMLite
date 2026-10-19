@@ -120,3 +120,34 @@ func TestKeysEnableDisableDelete(t *testing.T) {
 		t.Errorf("audit events = %v", seen)
 	}
 }
+
+// TestSigninReset: the way back in when no one can sign in to lift the
+// restrictions.
+func TestSigninReset(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "t.db")
+	db, repo, err := openForCLI(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auth.SaveSigninSettings(context.Background(), repo, auth.SigninSettings{AdminLocalOnly: true, EntraOnly: true}); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	if err := runSignin([]string{"show", "-db", dbPath}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSignin([]string{"reset", "-db", dbPath}); err != nil {
+		t.Fatal(err)
+	}
+	db, repo, err = openForCLI(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if st, err := auth.LoadSigninSettings(context.Background(), repo); err != nil || st != (auth.SigninSettings{}) {
+		t.Errorf("after reset = %+v %v", st, err)
+	}
+	if runSignin(nil) == nil || runSignin([]string{"bogus"}) == nil {
+		t.Error("bad usage accepted")
+	}
+}

@@ -374,6 +374,14 @@
   .login .input { width: 100%; height: 42px; }
   .login .btn-primary { height: 42px; justify-content: center; margin-top: 4px; }
   .login .notice { margin: 0; }
+  .login-pw { display: grid; gap: 14px; }
+  .restrict { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
+  .restrict .hint { margin-top: 4px; max-width: 62ch; }
+  .restrict .integ-switch { flex: none; margin-top: 2px; }
+  .restrict-panel { margin-top: 20px; }
+  .restrict-panel .notice, #entra-only-msg { margin: 12px 0 0; }
+  .entra-only h3 { margin: 0; font-size: 14px; font-weight: 600; }
+  .entra-only { margin-top: 18px; padding-top: 18px; border-top: 1px solid var(--rule); }
 
   footer { margin-top: 40px; text-align: center; font-size: 12.5px; color: var(--ink-2); }
 
@@ -439,12 +447,14 @@
   <form id="login-form">
     <h1 class="wordmark">SIEMLite</h1>
     <p>Sign in to search your logs.</p>
-    <label class="field-label">Username <input class="input" id="username" autocomplete="username" required></label>
-    <label class="field-label">Password <input class="input" id="password" type="password" autocomplete="current-password" required></label>
-    <button class="btn btn-primary" type="submit" id="login-btn">Sign in</button>
+    <div class="login-pw" id="login-pw">
+      <label class="field-label">Username <input class="input" id="username" autocomplete="username" required></label>
+      <label class="field-label">Password <input class="input" id="password" type="password" autocomplete="current-password" required></label>
+      <button class="btn btn-primary" type="submit" id="login-btn">Sign in</button>
+    </div>
     <p id="login-err" class="notice bad" role="alert" hidden></p>
     <div id="sso-row" class="sso-row" hidden>
-      <p class="sso-or"><span>or</span></p>
+      <p class="sso-or" id="sso-or"><span>or</span></p>
       <a class="btn" id="sso-entra" href="/api/v1/auth/entra/start">Sign in with Microsoft</a>
     </div>
   </form>
@@ -638,6 +648,16 @@
         </table>
       </div>
       <p class="notice" id="users-msg" role="status" hidden></p>
+      <section class="panel restrict-panel" aria-labelledby="admin-local-title">
+        <div class="restrict">
+          <div>
+            <h2 id="admin-local-title">Keep the admin account to this server</h2>
+            <p class="hint" id="admin-local-hint">Checking…</p>
+          </div>
+          <label class="switch integ-switch"><span>On</span><input type="checkbox" id="admin-local" disabled aria-labelledby="admin-local-title"><span class="track"></span></label>
+        </div>
+        <p class="notice" id="admin-local-msg" role="status" hidden></p>
+      </section>
     </section>
 
     <!-- Sources -->
@@ -878,6 +898,14 @@
             </div>
             <p class="notice" id="entra-msg" role="status" hidden></p>
           </form>
+          <div class="restrict entra-only">
+            <div>
+              <h3 id="entra-only-title">Only allow sign-in with Microsoft</h3>
+              <p class="hint" id="entra-only-hint">Checking…</p>
+            </div>
+            <label class="switch integ-switch"><span>On</span><input type="checkbox" id="entra-only" disabled aria-labelledby="entra-only-title"><span class="track"></span></label>
+          </div>
+          <p class="notice" id="entra-only-msg" role="status" hidden></p>
         </div>
       </section>
     </section>
@@ -1254,6 +1282,11 @@ async function loadProviders() {
     const res = await fetch("/api/v1/auth/providers", { credentials: "same-origin" });
     const p = res.ok ? await res.json() : {};
     $("sso-row").hidden = !p.entra;
+    // Only Microsoft sign-in here: no password form (the admin account signs in on the server's local address).
+    const pw = p.password !== false || !p.entra;
+    $("login-pw").hidden = !pw;
+    $("sso-or").hidden = !pw;
+    for (const id of ["username", "password"]) $(id).required = pw;
   } catch { $("sso-row").hidden = true; }
 }
 function showLogin(msg) {
@@ -1816,6 +1849,7 @@ $("acct-pw-form").onsubmit = async (e) => {
 let usersCache = [];
 async function openUsers() {
   notice($("users-msg"), "");
+  loadSignin();
   try {
     const [users] = await Promise.all([apiJSON("/api/v1/users"), loadSources()]);
     usersCache = users;
@@ -2706,6 +2740,7 @@ function renderIntegration(it) {
 async function refreshIntegrationCards() {
   try { for (const it of (await apiJSON("/api/v1/integrations")).integrations) renderIntegration(it); }
   catch (err) { notice($("integrations-msg"), err.message); }
+  await loadSignin(); // Microsoft-only sign-in depends on whether Entra is on
 }
 async function openIntegrations() {
   notice($("integrations-msg"), "");
@@ -2729,6 +2764,57 @@ for (const sw of document.querySelectorAll(".integ-switch input")) {
     await refreshIntegrationCards();
   };
 }
+
+// --- Sign-in restrictions (Users page and the Entra card) ---
+let signin = null;
+const localURL = () => `https://localhost:${signin.local_port}`;
+async function loadSignin() {
+  try { signin = await apiJSON("/api/v1/system/signin"); }
+  catch (err) { signin = null; $("admin-local-hint").textContent = $("entra-only-hint").textContent = err.message; }
+  renderSignin();
+}
+function renderSignin() {
+  if (!signin || !signin.enforced) { $("admin-local").disabled = $("entra-only").disabled = true; return; }
+  const s = signin, forced = s.enforced.admin_local_only && !s.admin_local_only;
+  const a = $("admin-local");
+  a.checked = s.enforced.admin_local_only;
+  a.disabled = !s.local_port || forced;
+  $("admin-local-hint").textContent = !s.local_port
+    ? "This server has no local port (-local-addr), so the admin account couldn't sign in anywhere if it were kept to the server."
+    : (a.checked
+      ? `The admin account can only sign in, and work, at ${localURL()} on this server. From elsewhere, use an SSH tunnel to that port.`
+      : `The built-in account named admin can be kept to this server: it then only signs in at ${localURL()} here, and its sessions anywhere else end.`) +
+      (forced ? " It stays on while only sign-in with Microsoft is allowed." : "") +
+      (s.admin_account ? "" : " There's no local Admin account named admin on this server.");
+  const e = $("entra-only");
+  e.checked = s.entra_only;
+  e.disabled = !s.entra_only && (!s.entra_active || !s.admin_account || !s.local_port);
+  $("entra-only-hint").textContent = s.entra_only
+    ? (s.entra_active
+      ? `Only Microsoft accounts can sign in. The admin account can still sign in on this server, at ${localURL()}, in case Microsoft sign-in stops working.`
+      : "On, but it only applies while sign-in with Microsoft is turned on. Until then, passwords work as usual.")
+    : !s.entra_active ? "Turn on sign-in with Microsoft first. Then password sign-in can be switched off for everyone else."
+    : !s.local_port ? "This server has no local port (-local-addr) for the admin account to fall back on, so passwords have to stay on."
+    : !s.admin_account ? "Add a local Admin account named admin first: it is the way back in if Microsoft sign-in stops working."
+    : `Turn off password sign-in for every account except the admin account, which can then only sign in on this server, at ${localURL()}.`;
+}
+async function saveSignin(input, field, msgNode, ask) {
+  const want = input.checked;
+  if (want && !(await confirmAction(...ask()))) { input.checked = false; return; }
+  input.disabled = true;
+  try {
+    signin = await apiJSON("/api/v1/system/signin", { method: "PUT", json: { [field]: want } });
+    notice(msgNode, "");
+  } catch (err) { input.checked = !want; notice(msgNode, err.message); }
+  renderSignin();
+}
+const iAmLocalAdmin = () => me.auth_provider === "local" && me.username.toLowerCase() === "admin";
+$("admin-local").onchange = () => saveSignin($("admin-local"), "admin_local_only", $("admin-local-msg"), () => ["Keep the admin account to this server?",
+  `It can then sign in only at ${localURL()} on this server (from elsewhere, through an SSH tunnel to that port). Its sessions anywhere else end now.` +
+  (iAmLocalAdmin() && !signin.local ? " That includes this one: you'll be signed out here." : ""), "Keep it here"]);
+$("entra-only").onchange = () => saveSignin($("entra-only"), "entra_only", $("entra-only-msg"), () => ["Only allow sign-in with Microsoft?",
+  `Accounts that sign in with a password are signed out and can't sign in again. The admin account can still sign in on this server, at ${localURL()}, if Microsoft sign-in stops working.` +
+  (me.auth_provider === "local" && !(iAmLocalAdmin() && signin.local) ? " That includes you." : ""), "Only Microsoft"]);
 
 // --- Microsoft Entra ID ---
 const entraRedirect = () => $("entra-url").value.trim().replace(/\/+$/, "") + "/api/v1/auth/entra/callback";

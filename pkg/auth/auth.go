@@ -18,6 +18,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"siemlite/pkg/storage"
@@ -150,6 +151,7 @@ type Authenticator struct {
 	limiter  *loginLimiter // failed sign-ins per client address
 	accounts *loginLimiter // failed sign-ins per account, from anywhere
 	changes  *loginLimiter // wrong current passwords per account, when changing one's own
+	policy   atomic.Pointer[Policy]
 
 	// lastTouch throttles "last used" writes to one per source per minute.
 	touchMu   sync.Mutex
@@ -217,6 +219,9 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Principal, error) {
 	}
 	if err != nil {
 		return nil, err
+	}
+	if !a.sessionAllowed(r.Context(), u.Username, u.AuthProvider) {
+		return nil, ErrInvalid
 	}
 	return &Principal{Kind: KindUser, Name: u.Username, Role: u.Role, UserID: u.ID, Limited: u.Limited, Sources: u.Sources, AuthProvider: u.AuthProvider}, nil
 }

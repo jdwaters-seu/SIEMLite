@@ -75,6 +75,8 @@ func main() {
 		err = runIntel(os.Args[2:])
 	} else if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		err = runHealthcheck(os.Args[2:])
+	} else if len(os.Args) > 1 && os.Args[1] == "signin" {
+		err = runSignin(os.Args[2:])
 	} else if len(os.Args) > 1 && os.Args[1] == "backups" {
 		err = runBackups(os.Args[2:])
 	} else {
@@ -95,6 +97,7 @@ var errRestart = errors.New("restart requested")
 func run() error {
 	dbPath := flag.String("db", "siemlite.db", "SQLite database path")
 	addr := flag.String("addr", "localhost:8443", "HTTPS listen address")
+	localAddr := flag.String("local-addr", "localhost:8444", "HTTPS listen address that counts as the server itself, for the admin account when it is kept to the server (empty = off); only the server must be able to reach it")
 	httpAddr := flag.String("http-addr", "", "plain-HTTP listen address for your own reverse proxy that does the HTTPS, e.g. 0.0.0.0:8080 (off when empty; never publish it)")
 	tlsMode := flag.String("tls-mode", "self-signed", "HTTPS certificate: self-signed (or the -tls-cert files), or letsencrypt for -domain; the System page overrides it")
 	domain := flag.String("domain", "", "domain to get a Let's Encrypt certificate for with -tls-mode=letsencrypt; port 443 must reach SIEMLite")
@@ -378,7 +381,7 @@ func run() error {
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiClient,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Proxies: proxies, Certs: certMgr, Audit: auditLog, Alerts: alertEngine,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Proxies: proxies, LocalAddr: *localAddr, Certs: certMgr, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:
@@ -392,8 +395,18 @@ func run() error {
 		defer wg.Done()
 		proxies.Run(bgCtx)
 	}()
-	serveErr := make(chan error, 2)
+	srv.RefreshSignin(ctx) // before the first request
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		srv.RunSignin(bgCtx)
+	}()
+	serveErr := make(chan error, 3)
 	go func() { serveErr <- srv.Start(certMgr.TLSConfig()) }()
+	if *localAddr != "" {
+		go func() { serveErr <- srv.StartLocal(certMgr.TLSConfig()) }()
+		slog.Info("local port listening; the admin account can sign in here when kept to the server", "url", "https://"+*localAddr)
+	}
 	if *httpAddr != "" {
 		go func() { serveErr <- srv.StartPlain(*httpAddr) }()
 		if proxies.Configured() {
@@ -746,6 +759,39 @@ func runHealthcheck(args []string) error {
 }
 
 // cliActor names whoever ran a command-line change, for the audit log.
+// runSignin shows or lifts the sign-in restrictions, for when no one can sign
+// in to change them. A running server picks the change up within a minute.
+func runSignin(args []string) error {
+	if len(args) == 0 || (args[0] != "show" && args[0] != "reset") {
+		return fmt.Errorf("usage: siemlite signin <show|reset> [-db siemlite.db]")
+	}
+	fs := flag.NewFlagSet("signin "+args[0], flag.ContinueOnError)
+	dbPath := fs.String("db", "siemlite.db", "SQLite database path")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	db, repo, err := openForCLI(*dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	ctx := context.Background()
+	st, err := auth.LoadSigninSettings(ctx, repo)
+	if err != nil && args[0] == "show" {
+		return err
+	}
+	if args[0] == "show" {
+		fmt.Printf("Admin account only on the server itself: %v\nOnly sign-in with Microsoft (while it is on): %v\n", st.AdminLocalOnly, st.EntraOnly)
+		return nil
+	}
+	if err := auth.SaveSigninSettings(ctx, repo, auth.SigninSettings{}); err != nil {
+		return err
+	}
+	fmt.Println("Sign-in restrictions lifted: the admin account can sign in from anywhere, and password sign-in is on. A running SIEMLite applies this within a minute.")
+	cliAudit(repo, audit.Entry{Action: "system.signin", Class: audit.AccountChange, Severity: 4, Message: cliActor() + " lifted the sign-in restrictions from the command line"})
+	return nil
+}
+
 func cliActor() string {
 	if u := os.Getenv("USER"); u != "" {
 		return "command line (" + u + ")"
