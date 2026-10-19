@@ -67,6 +67,9 @@ type Principal struct {
 	// the list, so a missing list can't widen access.
 	Limited bool
 	Sources []int64
+	// AuthProvider is how a user signs in: storage.ProviderLocal (a password
+	// here) or a service such as Microsoft Entra.
+	AuthProvider string
 }
 
 // Restricted reports whether the caller may only see some sources.
@@ -146,6 +149,7 @@ type Authenticator struct {
 	log      *slog.Logger
 	limiter  *loginLimiter // failed sign-ins per client address
 	accounts *loginLimiter // failed sign-ins per account, from anywhere
+	changes  *loginLimiter // wrong current passwords per account, when changing one's own
 
 	// lastTouch throttles "last used" writes to one per source per minute.
 	touchMu   sync.Mutex
@@ -158,7 +162,7 @@ func New(repo *storage.Repository, log *slog.Logger) *Authenticator {
 		log = slog.Default()
 	}
 	return &Authenticator{repo: repo, log: log, limiter: newLoginLimiter(maxFailures), accounts: newLoginLimiter(maxAccountFailures),
-		lastTouch: map[int64]time.Time{}}
+		changes: newLoginLimiter(maxFailures), lastTouch: map[int64]time.Time{}}
 }
 
 // AttemptsAllowed reports whether a client address may try to sign in (it is
@@ -214,7 +218,7 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Principal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Principal{Kind: KindUser, Name: u.Username, Role: u.Role, UserID: u.ID, Limited: u.Limited, Sources: u.Sources}, nil
+	return &Principal{Kind: KindUser, Name: u.Username, Role: u.Role, UserID: u.ID, Limited: u.Limited, Sources: u.Sources, AuthProvider: u.AuthProvider}, nil
 }
 
 // Require wraps next so only callers holding perm get through.

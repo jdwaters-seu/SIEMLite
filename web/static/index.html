@@ -117,8 +117,9 @@
   .account-grid { display: grid; gap: 16px; max-width: 760px; }
   .account-grid .panel h2 { margin-bottom: 4px; }
   .account-grid .theme { margin: 10px 0 0; max-width: 300px; }
-  .pw-form { display: grid; gap: 12px; margin-top: 12px; max-width: 360px; }
-  .pw-form .input { width: 100%; }
+  .account-grid .theme button[aria-pressed="true"] { background: var(--raised); box-shadow: none; }
+  .acct-pw-form { display: grid; gap: 12px; margin-top: 12px; max-width: 360px; }
+  .acct-pw-form .input { width: 100%; }
 
   .main { min-width: 0; padding: 0 40px 48px; }
   .mobile-bar { display: none; }
@@ -904,13 +905,13 @@
         <section class="panel" aria-labelledby="acct-auth-title">
           <h2 id="acct-auth-title">Sign-in</h2>
           <p class="hint" id="acct-auth-text"></p>
-          <form class="pw-form" id="pw-form" autocomplete="on" hidden>
-            <input type="text" autocomplete="username" id="pw-user" hidden>
-            <label class="field-label">Current password <input class="input" type="password" id="pw-current" autocomplete="current-password" required></label>
-            <label class="field-label">New password <span class="muted">(at least 12 characters)</span><input class="input" type="password" id="pw-new" autocomplete="new-password" minlength="12" required></label>
-            <label class="field-label">New password again <input class="input" type="password" id="pw-again" autocomplete="new-password" minlength="12" required></label>
-            <div><button class="btn btn-primary" type="submit" id="pw-save">Change password</button></div>
-            <p class="notice" id="pw-msg" role="status" hidden></p>
+          <form class="acct-pw-form" id="acct-pw-form" autocomplete="on" hidden>
+            <input type="text" autocomplete="username" id="acct-pw-user" hidden>
+            <label class="field-label">Current password <input class="input" type="password" id="acct-pw-current" autocomplete="current-password" required></label>
+            <label class="field-label">New password <span class="muted">(at least 12 characters)</span><input class="input" type="password" id="acct-pw-new" autocomplete="new-password" minlength="12" required></label>
+            <label class="field-label">New password again <input class="input" type="password" id="acct-pw-again" autocomplete="new-password" minlength="12" required></label>
+            <div><button class="btn btn-primary" type="submit" id="acct-pw-save">Change password</button></div>
+            <p class="notice" id="acct-pw-msg" role="status" hidden></p>
           </form>
         </section>
       </div>
@@ -1773,6 +1774,9 @@ function confirmAction(title, body, ok) {
 
 // --- Account ---
 async function openAccount() {
+  $("acct-pw-user").value = me.username;
+  for (const id of ["acct-pw-current", "acct-pw-new", "acct-pw-again"]) $(id).value = "";
+  notice($("acct-pw-msg"), "");
   $("account-sub").textContent = `Signed in as ${me.username}.`;
   $("acct-role").textContent = me.role === "admin" ? "Admin" : "Standard";
   $("acct-role").classList.toggle("on", me.role === "admin");
@@ -1790,25 +1794,22 @@ async function openAccount() {
     text += " An admin can change this.";
   }
   $("acct-role-text").textContent = text;
-  const microsoft = me.auth_provider === "entra";
+  const microsoft = me.auth_provider !== "local";
   $("acct-auth-text").textContent = microsoft
     ? "This account belongs to Microsoft Entra ID: you sign in with your work account, and its password is managed by your organization. Who may sign in is decided by an Entra group."
     : "This is a local SIEMLite account: you sign in with a password kept here. Changing it signs you out on every other browser.";
-  $("pw-form").hidden = microsoft;
-  $("pw-user").value = me.username;
-  for (const id of ["pw-current", "pw-new", "pw-again"]) $(id).value = "";
-  notice($("pw-msg"), "");
+  $("acct-pw-form").hidden = microsoft;
 }
-$("pw-form").onsubmit = async (e) => {
+$("acct-pw-form").onsubmit = async (e) => {
   e.preventDefault();
-  if ($("pw-new").value !== $("pw-again").value) { notice($("pw-msg"), "The new passwords don't match."); $("pw-again").focus(); return; }
-  $("pw-save").disabled = true;
+  if ($("acct-pw-new").value !== $("acct-pw-again").value) { notice($("acct-pw-msg"), "The new passwords don't match."); $("acct-pw-again").focus(); return; }
+  $("acct-pw-save").disabled = true;
   try {
-    await apiJSON("/api/v1/me/password", { method: "POST", json: { current_password: $("pw-current").value, new_password: $("pw-new").value } });
-    for (const id of ["pw-current", "pw-new", "pw-again"]) $(id).value = "";
-    notice($("pw-msg"), "Password changed. You were signed out on every other browser.", true);
-  } catch (err) { notice($("pw-msg"), err.message); }
-  $("pw-save").disabled = false;
+    await apiJSON("/api/v1/me/password", { method: "POST", json: { current_password: $("acct-pw-current").value, new_password: $("acct-pw-new").value } });
+    for (const id of ["acct-pw-current", "acct-pw-new", "acct-pw-again"]) $(id).value = "";
+    notice($("acct-pw-msg"), "Password changed. You were signed out on every other browser.", true);
+  } catch (err) { notice($("acct-pw-msg"), err.message); }
+  $("acct-pw-save").disabled = false;
 };
 
 // --- Users ---

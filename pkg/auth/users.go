@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -176,49 +177,70 @@ func (a *Authenticator) Login(ctx context.Context, remote, username, password st
 }
 
 // ErrWrongPassword means the current password given to ChangeOwnPassword is wrong.
-var ErrWrongPassword = errors.New("the current password is wrong")
+var ErrWrongPassword = errors.New("The current password is wrong.")
 
 // ErrNoPassword means the account signs in elsewhere (such as Microsoft) and has no password here.
-var ErrNoPassword = errors.New("this account signs in with Microsoft, so its password is managed by your organization")
+var ErrNoPassword = errors.New("This account signs in with Microsoft, so its password is managed by your organization.")
+
+// PasswordError is a new password that can't be used. Its message is meant
+// for the person choosing it.
+type PasswordError struct{ msg string }
+
+func (e PasswordError) Error() string { return e.msg }
 
 // ChangeOwnPassword lets a signed-in user change their password: the current
-// one must be right (checked with the same per-address and per-account limits
-// as signing in). Every session of the account ends, and a new one is started
-// for the caller, whose cookie should be set to the returned token.
+// one must be right. Wrong guesses are limited per account, separately from
+// signing in, so a session can't be used to lock its owner out of signing in
+// and failed sign-ins don't stop the owner changing their password. The new
+// password is stored, every session of the account ends and a new one starts
+// for the caller in one step; the caller's cookie should be set to the
+// returned token.
 func (a *Authenticator) ChangeOwnPassword(ctx context.Context, remote string, userID int64, current, next string) (token string, err error) {
-	u, err := a.repo.GetUser(ctx, userID)
+	u, hash, err := a.repo.GetUserWithHash(ctx, userID)
+	if errors.Is(err, storage.ErrUserNotFound) {
+		return "", ErrInvalid
+	}
 	if err != nil {
 		return "", err
 	}
 	if u.AuthProvider != storage.ProviderLocal {
 		return "", ErrNoPassword
 	}
-	account := strings.ToLower(u.Username)
-	if !a.limiter.allow(remote) || !a.accounts.allow(account) {
+	if err := ValidatePassword(next); err != nil {
+		return "", PasswordError{err.Error()}
+	}
+	if current == next {
+		return "", PasswordError{"Choose a password different from the current one."}
+	}
+	// Each attempt counts until it succeeds, so concurrent guesses can't slip
+	// past the limit while bcrypt runs.
+	key := strconv.FormatInt(userID, 10)
+	if !a.changes.take(key) {
 		return "", ErrTooManyAttempts
 	}
-	_, hash, err := a.repo.GetUserForLogin(ctx, u.Username)
-	if err != nil {
-		return "", err
-	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(current)) != nil {
-		a.limiter.fail(remote)
-		a.accounts.fail(account)
 		a.log.Warn("password change refused: wrong current password", "user", u.Username, "remote", remote)
 		return "", ErrWrongPassword
 	}
-	a.limiter.reset(remote)
-	a.accounts.reset(account)
-	if current == next {
-		return "", errors.New("choose a password different from the current one")
+	newHash, err := bcrypt.GenerateFromPassword([]byte(next), HashCost)
+	if err != nil {
+		return "", fmt.Errorf("hash password: %w", err)
 	}
-	if err := SetPassword(ctx, a.repo, u.Username, next); err != nil { // also ends every session
+	if token, err = randomToken(""); err != nil {
 		return "", err
 	}
-	if token, err = a.StartSession(ctx, u); err != nil {
+	now := time.Now()
+	err = a.repo.ChangeOwnPassword(ctx, userID, string(newHash), hashToken(token), now.UnixMilli(), now.Add(SessionTTL).UnixMilli())
+	switch {
+	case errors.Is(err, storage.ErrExternalUser):
+		return "", ErrNoPassword
+	case errors.Is(err, storage.ErrUserNotFound):
+		return "", ErrInvalid
+	case err != nil:
 		return "", err
 	}
-	a.log.Info("password changed by its owner", "user", u.Username)
+	a.changes.reset(key)
+	a.log.Info("password changed by its owner", "user", u.Username, "remote", remote)
 	return token, nil
 }
 
@@ -320,6 +342,27 @@ func (l *loginLimiter) allow(key string) bool {
 		return true
 	}
 	return e.count < l.max
+}
+
+// take counts an attempt before it is made and reports whether it may go
+// ahead; reset forgives them once one succeeds.
+func (l *loginLimiter) take(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	e, ok := l.entries[key]
+	if ok && now.Sub(e.first) <= failureWindow {
+		if e.count >= l.max {
+			return false
+		}
+		e.count++
+		return true
+	}
+	if !ok && len(l.entries) >= maxEntries {
+		l.makeRoom(now)
+	}
+	l.entries[key] = &attempts{count: 1, first: now}
+	return true
 }
 
 func (l *loginLimiter) fail(key string) {

@@ -53,11 +53,20 @@ func (r *Repository) CreateUser(ctx context.Context, username, passwordHash, rol
 
 // GetUserForLogin returns the user and their password hash.
 func (r *Repository) GetUserForLogin(ctx context.Context, username string) (*User, string, error) {
+	return r.userWithHash(ctx, `username = ?`, username)
+}
+
+// GetUserWithHash returns the user and their password hash, by ID.
+func (r *Repository) GetUserWithHash(ctx context.Context, id int64) (*User, string, error) {
+	return r.userWithHash(ctx, `id = ?`, id)
+}
+
+func (r *Repository) userWithHash(ctx context.Context, where string, arg any) (*User, string, error) {
 	var u User
 	var hash string
 	err := r.db.Read.QueryRowContext(ctx,
-		`SELECT id, username, role, created_at, password_hash, auth_provider, disabled FROM users WHERE username = ?`,
-		username).Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &hash, &u.AuthProvider, &u.Disabled)
+		`SELECT id, username, role, created_at, password_hash, auth_provider, disabled FROM users WHERE `+where,
+		arg).Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &hash, &u.AuthProvider, &u.Disabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", ErrUserNotFound
 	}
@@ -240,6 +249,42 @@ func (r *Repository) SetPassword(ctx context.Context, username, passwordHash str
 		return false, fmt.Errorf("clear sessions: %w", err)
 	}
 	return true, tx.Commit()
+}
+
+// ChangeOwnPassword stores a new password hash for a local account, ends all
+// of its sessions and starts one new session, in one transaction: either all
+// of it happens or none of it does.
+func (r *Repository) ChangeOwnPassword(ctx context.Context, userID int64, passwordHash, sessionHash string, nowMs, expiresMs int64) error {
+	tx, err := r.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var provider string
+	var disabled bool
+	if err := tx.QueryRowContext(ctx, `SELECT auth_provider, disabled FROM users WHERE id = ?`, userID).Scan(&provider, &disabled); errors.Is(err, sql.ErrNoRows) {
+		return ErrUserNotFound
+	} else if err != nil {
+		return fmt.Errorf("get user: %w", err)
+	}
+	switch {
+	case provider != ProviderLocal:
+		return ErrExternalUser
+	case disabled:
+		return ErrUserNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE users SET password_hash = ? WHERE id = ?`, passwordHash, userID); err != nil {
+		return fmt.Errorf("set password: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE user_id = ?`, userID); err != nil {
+		return fmt.Errorf("clear sessions: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`,
+		sessionHash, userID, nowMs, expiresMs); err != nil {
+		return fmt.Errorf("create session: %w", err)
+	}
+	return tx.Commit()
 }
 
 // DeleteUser removes a user by name; see DeleteUserByID.

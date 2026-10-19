@@ -11,17 +11,18 @@ import (
 	"time"
 )
 
-// Proxies are the reverse proxies (such as Caddy) whose X-Forwarded-For header
-// SIEMLite believes. Without them, every request would seem to come from the
-// proxy: one person's failed sign-ins would lock everyone out, and the audit
-// log would record the proxy's address instead of the visitor's.
+// Proxies are the reverse proxies or load balancers in front of SIEMLite
+// (-trusted-proxies) whose X-Forwarded-For header it believes. Without them,
+// every request would seem to come from the proxy: one person's failed
+// sign-ins would lock everyone out, and the audit log would record the
+// proxy's address instead of the visitor's.
 //
 // Entries are IP addresses, networks (CIDR) or host names. Host names are
 // looked up again every few seconds (refreshEvery), so a proxy container that
 // restarts with a new address is recognised, and its old address stops being
 // trusted, quickly. Between lookups an old address is still trusted, so a host
 // name should only be used where no other container can take that address
-// over: compose.public.yaml puts Caddy on a network it shares only with SIEMLite.
+// over, such as a network the proxy shares only with SIEMLite.
 type Proxies struct {
 	nets  []netip.Prefix
 	hosts []string

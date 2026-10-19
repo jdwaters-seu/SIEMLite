@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.16` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.16.1` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -245,7 +245,7 @@ the raw text.
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
 | `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`). |
-| `POST /api/v1/me/password` | any signed-in user | Change your own password: `{"current_password", "new_password"}`. The current password is checked with the same limits as signing in; your other sessions end, this one continues. Refused for Microsoft accounts. |
+| `POST /api/v1/me/password` | any signed-in user | Change your own password: `{"current_password", "new_password"}`. After 10 wrong current passwords in 15 minutes the account can't try again for the rest of the window (a limit of its own, separate from signing in); your other sessions end, this one continues. Refused for Microsoft accounts. |
 | `GET /health` | public | Up/down only. When signed in it also returns event count, database size, ingest queue state, indicator count and syslog counters. |
 
 Applications authenticate with `Authorization: Bearer <token>`. A missing or disabled token, or one whose source was deleted, returns `401`; a token used
@@ -576,7 +576,8 @@ Users page. They have no password, so **Change password** isn't offered for them
 they see.
 
 Anyone with a local account can change their own password on the **Account** page (it asks for the current one, and signs them out
-on every other browser). Admins can set anyone's password on the Users page.
+on every other browser). Wrong guesses there are limited separately from signing in, so someone using an unlocked session
+can't lock the owner out of signing in. Admins can set anyone's password on the Users page.
 
 Passwords are stored as bcrypt hashes. Sessions last 12 hours, use an `HttpOnly`, `Secure`, `SameSite=Strict` cookie,
 and end on sign-out. After 10 failed sign-ins in 15 minutes a client address is locked out for the rest of the window.

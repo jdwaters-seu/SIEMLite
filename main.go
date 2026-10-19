@@ -100,7 +100,7 @@ func run() error {
 	domain := flag.String("domain", "", "domain to get a Let's Encrypt certificate for with -tls-mode=letsencrypt; port 443 must reach SIEMLite")
 	acmeDirectory := flag.String("acme-directory", "", "ACME server for -tls-mode=letsencrypt (default Let's Encrypt; e.g. its staging server for testing)")
 	acmeCARoot := flag.String("acme-ca-root", "", "extra CA certificate (PEM file) to trust when talking to the ACME server, for a private ACME CA")
-	trustedProxies := flag.String("trusted-proxies", "", "reverse proxies whose X-Forwarded-For is believed: comma-separated addresses, networks or host names, e.g. caddy")
+	trustedProxies := flag.String("trusted-proxies", "", "reverse proxies whose X-Forwarded-For is believed: comma-separated addresses, networks or host names, e.g. 10.0.0.5")
 	certFile := flag.String("tls-cert", "", "TLS certificate PEM (default: <db dir>/siemlite.crt, self-signed if missing)")
 	keyFile := flag.String("tls-key", "", "TLS private key PEM (default: <db dir>/siemlite.key)")
 	tlsHosts := flag.String("tls-hosts", "", "extra comma-separated DNS names/IPs for a generated certificate")

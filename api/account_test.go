@@ -72,6 +72,35 @@ func TestChangeOwnPasswordLimits(t *testing.T) {
 	if got := e.call(me, "POST", "/api/v1/me/password", map[string]string{"current_password": password, "new_password": "a brand new passphrase"}, nil, nil); got != 429 {
 		t.Errorf("right password during lockout = %d", got)
 	}
+	// Guesses made through a session don't lock the owner out of signing in.
+	if got := e.login(e.client(), "sam", password); got.StatusCode != 200 {
+		t.Errorf("sign-in after password-change guesses = %d", got.StatusCode)
+	}
+}
+
+// TestFailedSignInsDontBlockAChange: someone failing to sign in as you
+// doesn't stop you changing your password, and a request that changes
+// nothing doesn't clear their failures.
+func TestFailedSignInsDontBlockAChange(t *testing.T) {
+	e := newEnv(t)
+	e.user("sam", auth.RoleStandard)
+	me := e.client()
+	e.login(me, "sam", password)
+	for i := 0; i < 10; i++ {
+		e.login(e.client(), "sam", "wrong-password-"+string(rune('a'+i)))
+	}
+	if got := e.login(e.client(), "sam", password); got.StatusCode != 429 {
+		t.Fatalf("sign-in limit didn't trip: %d", got.StatusCode)
+	}
+	if got := e.call(me, "POST", "/api/v1/me/password", map[string]string{"current_password": password, "new_password": password}, nil, nil); got != 400 {
+		t.Errorf("unchanged password = %d", got)
+	}
+	if got := e.login(e.client(), "sam", password); got.StatusCode != 429 {
+		t.Errorf("a no-op change cleared the sign-in limit: %d", got.StatusCode)
+	}
+	if got := e.call(me, "POST", "/api/v1/me/password", map[string]string{"current_password": password, "new_password": "a brand new passphrase"}, nil, nil); got != 200 {
+		t.Errorf("change during a sign-in lockout = %d", got)
+	}
 }
 
 func TestMicrosoftAccountHasNoPasswordToChange(t *testing.T) {
