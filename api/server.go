@@ -66,6 +66,9 @@ type Deps struct {
 	Entra *entra.Service
 	// Proxies are the reverse proxies whose X-Forwarded-For is believed (optional).
 	Proxies *Proxies
+	// LocalAddr is the local port's address, e.g. localhost:8444 (optional).
+	// Requests on it count as coming from the server itself (see signin.go).
+	LocalAddr string
 	// Certs chooses the HTTPS certificate (System page; optional).
 	Certs   *certs.Manager
 	Updates *update.Checker // optional: the System page's update card
@@ -80,6 +83,9 @@ type Server struct {
 	deps  Deps
 	http  *http.Server
 	plain *http.Server // plain HTTP, for a reverse proxy in front (optional)
+	local *http.Server // the local port (optional)
+
+	signinMuSave sync.Mutex // one sign-in settings change at a time
 
 	checkMu sync.Mutex
 	checks  map[string]time.Time // reachability checks under way (tlsapi.go)
@@ -116,6 +122,16 @@ func NewServer(addr string, deps Deps) *Server {
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
+	}
+	if deps.LocalAddr != "" {
+		s.local = &http.Server{
+			Addr:              deps.LocalAddr,
+			Handler:           s.LocalHandler(),
+			ReadHeaderTimeout: s.http.ReadHeaderTimeout,
+			ReadTimeout:       s.http.ReadTimeout,
+			WriteTimeout:      s.http.WriteTimeout,
+			IdleTimeout:       s.http.IdleTimeout,
+		}
 	}
 	return s
 }
@@ -158,6 +174,8 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /api/v1/system/tls", s.handleGetTLS)
 	admin("PUT /api/v1/system/tls", s.handleSaveTLS)
 	admin("POST /api/v1/system/tls/check", s.handleCheckTLS)
+	admin("GET /api/v1/system/signin", s.handleGetSignin)
+	admin("PUT /api/v1/system/signin", s.handleSaveSignin)
 	admin("GET /api/v1/system/update", s.handleUpdateStatus)
 	admin("POST /api/v1/system/update", s.handleApplyUpdate)
 	admin("GET /api/v1/integrations", s.handleListIntegrations)
@@ -209,16 +227,18 @@ func (s *Server) Start(cfg *tls.Config) error {
 // Shutdown gracefully stops the server.
 func (s *Server) Shutdown(ctx context.Context) error {
 	err := s.http.Shutdown(ctx)
-	if s.plain != nil {
-		if perr := s.plain.Shutdown(ctx); err == nil {
-			err = perr
+	for _, other := range []*http.Server{s.plain, s.local} {
+		if other != nil {
+			if oerr := other.Shutdown(ctx); err == nil {
+				err = oerr
+			}
 		}
 	}
 	return err
 }
 
-// StartPlain serves plain HTTP on addr until Shutdown, for a reverse proxy
-// (such as Caddy) that does the HTTPS. It must only be reachable by the proxy:
+// StartPlain serves plain HTTP on addr until Shutdown, for a reverse proxy or
+// load balancer that does the HTTPS. It must only be reachable by the proxy:
 // with trusted proxies configured, it refuses everyone else.
 func (s *Server) StartPlain(addr string) error {
 	s.plain = &http.Server{
@@ -539,6 +559,12 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	token, user, err := s.deps.Auth.Login(r.Context(), s.clientIP(r), req.Username, req.Password)
 	switch {
+	case errors.Is(err, auth.ErrLocalOnly), errors.Is(err, auth.ErrPasswordsOff):
+		who := s.attemptedUser(r, req.Username)
+		s.auditSignin(r, audit.Entry{Action: "signin.refused", Actor: who, Class: audit.Authentication, Severity: 3,
+			Message: "Password sign-in refused for " + who + ": " + map[bool]string{true: "the admin account only signs in on the server itself", false: "only sign-in with Microsoft is allowed"}[errors.Is(err, auth.ErrLocalOnly)]})
+		writeError(w, http.StatusForbidden, err.Error())
+		return
 	case errors.Is(err, auth.ErrBadCredentials):
 		who := s.attemptedUser(r, req.Username)
 		s.auditSignin(r, audit.Entry{Action: "signin.failed", Actor: who, Class: audit.Authentication, Severity: 3,
@@ -691,21 +717,13 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not signed in")
 		return
 	}
-	provider := ""
-	if u, err := s.deps.Repo.GetUser(r.Context(), p.UserID); err == nil {
-		provider = u.AuthProvider
-	}
-	writeJSON(w, http.StatusOK, s.session(p.Name, p.Role, p.Limited, p.Sources, provider))
+	writeJSON(w, http.StatusOK, s.session(p.Name, p.Role, p.Limited, p.Sources, p.AuthProvider))
 }
 
 // handleChangeOwnPassword lets a signed-in user change their own password.
 // Their other sessions end; this one carries on with a new cookie.
 func (s *Server) handleChangeOwnPassword(w http.ResponseWriter, r *http.Request) {
-	p := auth.FromContext(r.Context())
-	if p == nil || p.Kind != auth.KindUser {
-		writeError(w, http.StatusForbidden, "only people can change a password")
-		return
-	}
+	p := auth.FromContext(r.Context()) // a user: PermSearch is never granted to API keys
 	var req struct {
 		Current string `json:"current_password"`
 		New     string `json:"new_password"`
@@ -722,17 +740,19 @@ func (s *Server) handleChangeOwnPassword(w http.ResponseWriter, r *http.Request)
 	case errors.Is(err, auth.ErrWrongPassword):
 		s.audit(r, audit.Entry{Action: "user.password.self", Class: audit.AccountChange, Severity: 3,
 			Message: p.Name + " tried to change their password, but the current password was wrong", Fields: map[string]string{"target": p.Name, "result": "failed"}})
-		writeError(w, http.StatusBadRequest, "The current password is wrong.")
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
-	case errors.Is(err, auth.ErrNoPassword):
-		writeError(w, http.StatusBadRequest, "This account signs in with Microsoft, so its password is managed by your organization.")
+	case errors.As(err, new(auth.PasswordError)), errors.Is(err, auth.ErrNoPassword):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, auth.ErrInvalid):
+		writeError(w, http.StatusUnauthorized, "not signed in")
 		return
 	case err != nil:
-		writeError(w, http.StatusBadRequest, err.Error())
+		s.internal(w, "change the password", err)
 		return
 	}
 	auth.SetSessionCookie(w, token)
-	s.deps.Logger.Info("password changed by its owner", "user", p.Name)
 	s.audit(r, audit.Entry{Action: "user.password.self", Class: audit.AccountChange, Severity: 2,
 		Message: p.Name + " changed their own password; their other sessions were ended", Fields: map[string]string{"target": p.Name}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "password changed; you were signed out everywhere else"})

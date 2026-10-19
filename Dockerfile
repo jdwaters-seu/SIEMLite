@@ -31,7 +31,7 @@ WORKDIR /data
 VOLUME /data
 USER nonroot
 # HTTPS, then syslog on unprivileged ports (compose maps 514 to 5514).
-EXPOSE 8443 5514/tcp 5514/udp 6514
+EXPOSE 8443 8444 5514/tcp 5514/udp 6514
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s CMD ["siemlite", "healthcheck"]
 ENTRYPOINT ["siemlite"]
 CMD ["-addr", "0.0.0.0:8443"]

@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.16` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.17` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -69,6 +69,7 @@ missed it, set a new one: `docker compose exec siemlite siemlite users passwd -u
 - The database and certificate live in the `siemlite-data` volume, so rebuilds and upgrades keep every event,
   account and key. `docker compose down` keeps the volume; `docker compose down -v` deletes it.
 - Ports: HTTPS on 8443, syslog on 514 (UDP and TCP) and syslog over TLS on 6514. Change the host ports in `.env`.
+  The local port, 8444, is published on `127.0.0.1` only, so only the server itself reaches it (see [Sign-in restrictions](#sign-in-restrictions)).
 - Settings: every server flag can be set in `.env` as `SIEMLITE_<FLAG>`, e.g. `SIEMLITE_RETENTION_DAYS=90`
   for `-retention-days`. `.env.example` lists the useful ones.
 - Set `SIEMLITE_TLS_HOSTS` to the names or IPs people use to reach the server **before the first start**: the
@@ -132,7 +133,7 @@ usually within seconds, then who issued it and until when. Or set it from the st
 - **Alerts**: alerts raised by the rules, by severity, with how many events and when. Open the events behind an alert,
   acknowledge it while you look into it, then close it. The **Rules** tab lists the rules; admins add, edit and switch them off.
   Users limited to some sources don't see alerts, since a rule looks at every source.
-- **Users** (admins): add people, set their role, limit what they can see, change passwords.
+- **Users** (admins): add people, set their role, limit what they can see, change passwords, and keep the built-in admin account to the server itself.
 - **Sources** (admins): add sources (each gets an access token and ready-to-paste code), see when each source last sent logs, choose how each source's lines are read (Automatic, None or a parser), add logs by hand, and enable, disable or delete a token (Manage).
 - **Parsers** (admins): build, upload, export and edit parsers.
 - **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off: email, and sign-in with Microsoft Entra ID.
@@ -244,8 +245,9 @@ the raw text.
 | `GET`/`POST /api/v1/backups`, `PUT /api/v1/backups/settings`, `POST /api/v1/backups/upload` | admin | List backups and the job status, start a backup, set the schedule (`{"interval_hours": 0/6/24/168, "keep"}`), upload a backup file. |
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
-| `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`). |
-| `POST /api/v1/me/password` | any signed-in user | Change your own password: `{"current_password", "new_password"}`. The current password is checked with the same limits as signing in; your other sessions end, this one continues. Refused for Microsoft accounts. |
+| `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`). A password sign-in refused by a [sign-in restriction](#sign-in-restrictions) gets `403`. |
+| `GET`/`PUT /api/v1/system/signin` | admin | The [sign-in restrictions](#sign-in-restrictions): `{"admin_local_only", "entra_only"}` (send either). The answer also says what is enforced now, the local port, and whether the request came in on it. Turning either on is refused without a local port; Microsoft-only also needs sign-in with Microsoft on and a local Admin account named `admin`. |
+| `POST /api/v1/me/password` | any signed-in user | Change your own password: `{"current_password", "new_password"}`. After 10 wrong current passwords in 15 minutes the account can't try again for the rest of the window (a limit of its own, separate from signing in); your other sessions end, this one continues. Refused for Microsoft accounts. |
 | `GET /health` | public | Up/down only. When signed in it also returns event count, database size, ingest queue state, indicator count and syslog counters. |
 
 Applications authenticate with `Authorization: Bearer <token>`. A missing or disabled token, or one whose source was deleted, returns `401`; a token used
@@ -518,7 +520,8 @@ Enter them on the card, choose **Test connection** (it shows the group names and
   kept, the check says so, and it can't sign in again while it is outside the group, so create another admin.
 - **Accounts are matched by Microsoft's object ID**, not by name. A Microsoft user name that matches an existing local account is
   refused, never linked to it, so nobody can take over a local account by having the same name.
-- **Password sign-in stays** for local accounts, so keep a local admin in case Microsoft is unreachable. Accounts that sign in with
+- **Password sign-in stays** for local accounts unless you choose **Only allow sign-in with Microsoft** (see
+  [Sign-in restrictions](#sign-in-restrictions)), so keep a local admin in case Microsoft is unreachable. Accounts that sign in with
   Microsoft have no password. Turning the integration off, or removing it, stops new Microsoft sign-ins and signs out everyone who signed in
   with Microsoft right away; the accounts stay, and local sessions are not touched. It is refused if the only enabled admins sign
   in with Microsoft, since they would be locked out: create a local admin first.
@@ -576,10 +579,40 @@ Users page. They have no password, so **Change password** isn't offered for them
 they see.
 
 Anyone with a local account can change their own password on the **Account** page (it asks for the current one, and signs them out
-on every other browser). Admins can set anyone's password on the Users page.
+on every other browser). Wrong guesses there are limited separately from signing in, so someone using an unlocked session
+can't lock the owner out of signing in. Admins can set anyone's password on the Users page.
 
 Passwords are stored as bcrypt hashes. Sessions last 12 hours, use an `HttpOnly`, `Secure`, `SameSite=Strict` cookie,
 and end on sign-out. After 10 failed sign-ins in 15 minutes a client address is locked out for the rest of the window.
+
+### Sign-in restrictions
+
+Two switches tighten who can sign in with a password. Both take effect at once, for new sign-ins and for sessions already open.
+
+- **Keep the admin account to this server** (Users page): the built-in local account named `admin` (the one made on first start) can
+  then sign in, and work, only on SIEMLite's **local port**: `https://localhost:8444` on the server itself. Elsewhere its sign-in is
+  refused, whatever the password, and its sessions stop working. From another computer, reach the local port through an SSH tunnel
+  (`ssh -L 8444:localhost:8444 you@server`, then open `https://localhost:8444`). Other admins aren't affected.
+- **Only allow sign-in with Microsoft** (the Microsoft Entra ID card on the Integrations page): every account that signs in with a password
+  is signed out and refused, so only Microsoft accounts can sign in. The built-in `admin` account is the exception, but only on the local
+  port, so you can still get in if Microsoft sign-in breaks. It needs sign-in with Microsoft turned on and a local Admin account named
+  `admin`. It applies only while sign-in with Microsoft is on: turning that off brings passwords back.
+
+"On the server itself" means the request came in on the local port, not that it came from a particular address: behind Docker or a
+proxy on the same machine, visitors from anywhere can arrive from a local-looking address. The local port is set with `-local-addr`
+(default `localhost:8444`; outside a container, keep it on localhost). The Docker setup publishes it on the server's `127.0.0.1` only
+(`SIEMLITE_LOCAL_PORT` in `.env`). The port also checks who is connecting: it answers loopback and, in a container, only the
+container's gateway, which is where the server's own connections come from. Other containers on the network, and other machines that
+route to the container's address, are refused.
+
+If no one can sign in to lift the restrictions, run this on the server (a running SIEMLite applies it within a minute):
+
+```sh
+./siemlite signin show
+./siemlite signin reset            # Docker: docker compose exec siemlite siemlite signin reset
+```
+
+Changes are in the [audit log](#audit-log) (`system.signin`), and so are refused sign-ins (`signin.refused`).
 
 ## Sources
 
@@ -645,6 +678,7 @@ by spaces.
 | `-domain` | | The domain to get a Let's Encrypt certificate for; port 443 must reach SIEMLite |
 | `-acme-directory` | Let's Encrypt | Another ACME server, such as Let's Encrypt's staging server for testing |
 | `-acme-ca-root` | | A CA certificate (PEM file) to trust when talking to the ACME server, for a private ACME CA |
+| `-local-addr` | `localhost:8444` | HTTPS listen address that counts as the server itself, for the [sign-in restrictions](#sign-in-restrictions) (off when empty). Only the server must be able to reach it |
 | `-http-addr` | | Plain-HTTP listen address for your own reverse proxy that does the HTTPS (off when empty). Never publish it |
 | `-trusted-proxies` | | Reverse proxies whose `X-Forwarded-For` is believed: addresses, networks or host names, e.g. `proxy`. With it set, the `-http-addr` port refuses everyone else |
 | `-db` | `siemlite.db` | SQLite database path; events go in a folder beside it named after it (`siemlite-events`) |

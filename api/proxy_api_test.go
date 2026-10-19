@@ -24,7 +24,7 @@ func signIn(e *env, xff, pw string) int {
 // Behind a trusted proxy, each visitor is locked out on their own, and the
 // audit log names them, not the proxy.
 func TestBehindATrustedProxy(t *testing.T) {
-	p, err := api.ParseProxies("127.0.0.1, ::1") // the test client connects from loopback, like Caddy would
+	p, err := api.ParseProxies("127.0.0.1, ::1") // the test client connects from loopback, like a local proxy would
 	if err != nil {
 		t.Fatal(err)
 	}

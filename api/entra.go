@@ -85,6 +85,7 @@ func (s *Server) handleSaveEntra(w http.ResponseWriter, r *http.Request) {
 			msg += ", and changed the client secret"
 		}
 	}
+	s.RefreshSignin(r.Context())
 	s.deps.Logger.Info("Entra settings changed", "by", who)
 	s.audit(r, audit.Entry{Action: "system.entra.save", Severity: 4, Message: msg})
 	v, err := s.deps.Entra.Get(r.Context())
@@ -152,7 +153,11 @@ func (s *Server) handleSyncEntra(w http.ResponseWriter, r *http.Request) {
 
 // handleProviders tells the sign-in page which "sign in with" buttons to show.
 func (s *Server) handleProviders(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]bool{"entra": s.deps.Entra != nil && s.deps.Entra.Active(r.Context())})
+	// password is false when only Microsoft sign-in is allowed here (the
+	// built-in admin's sign-in is on the local port, where it stays true).
+	p := s.deps.Auth.Policy()
+	writeJSON(w, http.StatusOK, map[string]bool{"entra": s.entraActive(r.Context()),
+		"password": !p.PasswordsOff || auth.IsLocal(r.Context()), "local": auth.IsLocal(r.Context())})
 }
 
 func (s *Server) ssoRedirect(w http.ResponseWriter, r *http.Request, errCode string) {

@@ -185,6 +185,7 @@ func (s *Server) handleSetIntegrationEnabled(w http.ResponseWriter, r *http.Requ
 		s.internal(w, "turn "+it.ID()+" on or off", err)
 		return
 	}
+	s.RefreshSignin(r.Context())
 	verb := "turned off"
 	if *body.Enabled {
 		verb = "turned on"

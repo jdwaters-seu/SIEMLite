@@ -9,6 +9,9 @@ services:
     restart: unless-stopped
     command:
       - -addr=0.0.0.0:8443
+      # The local port: published on the server's 127.0.0.1 only (below), so
+      # only the server itself reaches it. See "Sign-in restrictions" in the README.
+      - -local-addr=0.0.0.0:${SIEMLITE_LOCAL_PORT:-8444}
       - -syslog-udp=:5514
       - -syslog-tcp=:5514
       - -syslog-tls=:6514
@@ -17,6 +20,7 @@ services:
         required: false
     ports:
       - "${SIEMLITE_BIND:-}:${SIEMLITE_HTTPS_PORT:-8443}:8443"
+      - "127.0.0.1:${SIEMLITE_LOCAL_PORT:-8444}:${SIEMLITE_LOCAL_PORT:-8444}"
       - "${SIEMLITE_BIND:-}:${SIEMLITE_SYSLOG_PORT:-514}:5514/udp"
       - "${SIEMLITE_BIND:-}:${SIEMLITE_SYSLOG_PORT:-514}:5514/tcp"
       - "${SIEMLITE_BIND:-}:${SIEMLITE_SYSLOG_TLS_PORT:-6514}:6514"
