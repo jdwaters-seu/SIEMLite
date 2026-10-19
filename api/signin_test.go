@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -248,5 +249,30 @@ func TestPolicyFromStoredSettings(t *testing.T) {
 	e.api.RefreshSignin(t.Context())
 	if got, _ := e.loginAt(e.srv.URL, e.client(), "admin", password); got != 403 {
 		t.Errorf("after a refresh = %d", got)
+	}
+}
+
+// TestLocalPortOnlyAnswersTheServer: a connection that reaches the local port
+// from elsewhere (another container, or a machine routing to the container's
+// address) is refused, so it can't sign in as the admin.
+func TestLocalPortOnlyAnswersTheServer(t *testing.T) {
+	e := newEnvWith(t, withLocalPort)
+	e.user("admin", auth.RoleAdmin)
+	h := e.api.LocalHandler()
+	for addr, want := range map[string]int{"127.0.0.1:5000": 401, "[::1]:5000": 401, "10.9.8.7:5000": 403, "192.168.1.20:5000": 403} {
+		req := httptest.NewRequest("GET", "/api/v1/me", nil)
+		req.RemoteAddr = addr
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != want {
+			t.Errorf("%s = %d, want %d", addr, rec.Code, want)
+		}
+	}
+	req := httptest.NewRequest("POST", "/api/v1/login", strings.NewReader(`{"username":"admin","password":"`+password+`"}`))
+	req.RemoteAddr = "172.30.0.9:4000"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != 403 || len(rec.Result().Cookies()) != 0 {
+		t.Errorf("sign-in from another container = %d %v", rec.Code, rec.Result().Cookies())
 	}
 }

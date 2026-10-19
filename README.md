@@ -600,8 +600,10 @@ Two switches tighten who can sign in with a password. Both take effect at once, 
 
 "On the server itself" means the request came in on the local port, not that it came from a particular address: behind Docker or a
 proxy on the same machine, visitors from anywhere can arrive from a local-looking address. The local port is set with `-local-addr`
-(default `localhost:8444`). The Docker setup publishes it on the server's `127.0.0.1` only (`SIEMLITE_LOCAL_PORT` in `.env`). Other
-containers on the same Docker network can reach it too, so only add containers you trust to SIEMLite's network.
+(default `localhost:8444`; outside a container, keep it on localhost). The Docker setup publishes it on the server's `127.0.0.1` only
+(`SIEMLITE_LOCAL_PORT` in `.env`). The port also checks who is connecting: it answers loopback and, in a container, only the
+container's gateway, which is where the server's own connections come from. Other containers on the network, and other machines that
+route to the container's address, are refused.
 
 If no one can sign in to lift the restrictions, run this on the server (a running SIEMLite applies it within a minute):
 

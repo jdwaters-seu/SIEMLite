@@ -6,6 +6,11 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/netip"
+	"os"
+	"slices"
+	"strconv"
+	"strings"
 	"time"
 
 	"siemlite/pkg/audit"
@@ -188,12 +193,66 @@ func (s *Server) handleSaveSignin(w http.ResponseWriter, r *http.Request) {
 }
 
 // LocalHandler is the handler for the local port: every request is marked as
-// coming from the server itself.
+// coming from the server itself. It answers only connections from the server:
+// loopback, and in a container the container's gateway, which is where the
+// host's published port (on 127.0.0.1) connects from. Other containers on the
+// network, and on older Docker other machines that route to the container's
+// address, reach the port from their own addresses and are refused.
 func (s *Server) LocalHandler() http.Handler {
 	h := s.Handler()
+	peers := localPeers()
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if a, ok := peerAddr(r.RemoteAddr); !ok || !(a.IsLoopback() || slices.Contains(peers, a)) {
+			s.deps.Logger.Warn("local port refused a connection that isn't from this server", "remote", r.RemoteAddr)
+			writeError(w, http.StatusForbidden, "this port only answers the server itself")
+			return
+		}
 		h.ServeHTTP(w, r.WithContext(auth.WithLocal(r.Context())))
 	})
+}
+
+// localPeers are the addresses besides loopback that count as the server:
+// the default gateways, but only inside a container (outside one, the
+// gateway is a router).
+func localPeers() []netip.Addr {
+	if !inContainer() {
+		return nil
+	}
+	b, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return nil
+	}
+	return defaultGateways(string(b))
+}
+
+func inContainer() bool {
+	for _, f := range []string{"/.dockerenv", "/run/.containerenv"} {
+		if _, err := os.Stat(f); err == nil {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultGateways reads /proc/net/route: the gateway of each default route,
+// written as little-endian hex.
+func defaultGateways(table string) []netip.Addr {
+	var out []netip.Addr
+	for _, line := range strings.Split(table, "\n")[1:] {
+		f := strings.Fields(line)
+		if len(f) < 3 || f[1] != "00000000" {
+			continue
+		}
+		g, err := strconv.ParseUint(f[2], 16, 32)
+		if err != nil || g == 0 {
+			continue
+		}
+		a := netip.AddrFrom4([4]byte{byte(g), byte(g >> 8), byte(g >> 16), byte(g >> 24)})
+		if !slices.Contains(out, a) {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 // StartLocal serves HTTPS on the local port (Deps.LocalAddr) until Shutdown.
