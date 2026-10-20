@@ -315,9 +315,12 @@ Set it up on the **Integrations** page, choosing where the model runs:
 - **In the cloud**, with [OpenRouter](https://openrouter.ai) and your API key (from [openrouter.ai/keys](https://openrouter.ai/keys)).
   Choose a model: the recommended ones are small, fast and inexpensive, and the full list shows every model that can answer
   in a JSON shape, with its price. The sample lines you ask about are sent to OpenRouter and the model's provider, so:
-  - IP, email and MAC addresses and host names are replaced before sending (on unless you turn it off). The stand-ins keep
-    the lines' shape, and the answer is changed back, so the parser fits the real lines. Other text, such as user names, is
-    sent as written.
+  - IP, email and MAC addresses and host names are replaced before sending (on unless you turn it off). Every dotted name
+    counts as a host name, including file and field names such as `index.html` or `actor.ip`, so nothing slips through on an
+    unusual domain; this can make field mapping for JSON with dotted field names less precise. The stand-ins keep the lines'
+    shape, and the answer is changed back, so the parser fits the real lines. Other text, such as user names, is sent as written.
+  - Before anything is sent, SIEMLite checks the exact text: if an address, or part of one, is still there, nothing is sent
+    and you are asked to remove it from the samples or use a model on this server.
   - SIEMLite asks OpenRouter to use only providers that don't keep or train on what they're sent.
   - The key is encrypted like the [email](#email) password and never shown again.
 

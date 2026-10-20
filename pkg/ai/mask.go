@@ -108,9 +108,6 @@ func (m *masker) mask(s string) string {
 		return m.fake(v, func() string { m.n6++; return fmt.Sprintf("2001:db8::%x", m.n6) })
 	})
 	s = hostRe.ReplaceAllStringFunc(s, func(v string) string {
-		if !parser.HostName(v) {
-			return v
-		}
 		l := strings.ToLower(v)
 		if m.toReal[v] != "" || l == "example.com" || l == "example.net" || strings.HasSuffix(l, ".example.com") || strings.HasSuffix(l, ".example.net") {
 			return v // a stand-in, or inside one
@@ -179,8 +176,8 @@ func (m *masker) standIn(v string) bool {
 }
 
 // fragments are the telling pieces of a real address: runs of at least three
-// parts of an IPv4, IPv6 or MAC address, and pieces of a name that are host
-// names themselves (fisni.com, corp.fisni.com), lowercased. Short or generic pieces are left
+// parts of an IPv4, IPv6 or MAC address, and of at least two labels of a
+// name (fisni.com, corp.fisni), lowercased. Short or generic pieces are left
 // out so ordinary numbers don't trip the check.
 func fragments(real string) []string {
 	l := strings.ToLower(real)
@@ -206,9 +203,6 @@ func fragments(real string) []string {
 			f := strings.Join(parts[i:i+n], sep)
 			if len(strings.Trim(f, sep)) < 5 || generic[f] {
 				continue
-			}
-			if sep == "." && min == 2 && !parser.HostName(f) {
-				continue // user.name, from actor.user.name, is a field name, not part of a host
 			}
 			out = append(out, f)
 		}

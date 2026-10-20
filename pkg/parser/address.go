@@ -20,8 +20,10 @@ var (
 	// decides whether it is one (not a time).
 	IPv6Re = regexp.MustCompile(`(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}`)
 	MACRe  = regexp.MustCompile(`(?i)[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}`)
-	// Dotted names whose last part is a word: host names, and things that look
-	// like them (index.html, java.lang.String).
+	// Dotted names whose last part is a word: host names, and everything that
+	// looks like one (index.html, java.lang.String, actor.ip). There is no list
+	// of top-level names to decide which are hosts: an internal one would slip
+	// through, so all of them count.
 	HostRe = regexp.MustCompile(`(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,23}[a-z0-9]`)
 )
 
@@ -54,28 +56,6 @@ func IPv4Address(v string) bool {
 	return true
 }
 
-// HostName reports whether a run HostRe found should be treated as a host
-// name: three or more parts (bastion.corp.example), or two ending in a
-// common or internal top-level name (example.com, db01.lan). Two-part field
-// names such as actor.ip or user.name aren't.
-func HostName(v string) bool {
-	labels := strings.Split(strings.ToLower(v), ".")
-	if len(labels) >= 3 {
-		return true
-	}
-	return len(labels) == 2 && hostTLDs[labels[1]]
-}
-
-var hostTLDs = map[string]bool{}
-
-func init() {
-	for _, t := range strings.Fields(`com net org edu gov mil int io co biz info me tv cloud app dev tech online site xyz
-		local localdomain localhost lan internal intranet corp home homelab arpa private priv test example invalid
-		uk de fr nl be ch at se no dk fi pl cz es pt it ie ca au nz jp cn kr in br mx ru za sg hk tw`) {
-		hostTLDs[t] = true
-	}
-}
-
 // AddressSpans returns where address-like text is in s, as [start, end) pairs.
 func AddressSpans(s string) [][2]int {
 	var out [][2]int
@@ -90,7 +70,7 @@ func AddressSpans(s string) [][2]int {
 	add(IPv4Re, IPv4Address)
 	add(IPv6Re, IPv6Address)
 	add(MACRe, nil)
-	add(HostRe, HostName)
+	add(HostRe, nil)
 	return out
 }
 

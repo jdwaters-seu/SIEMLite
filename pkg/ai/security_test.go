@@ -192,7 +192,7 @@ func TestGuardStopsWhatMaskingMissed(t *testing.T) {
 		}
 	}
 	for _, text := range []string{
-		"took 30.1s, version 1.2.3, at 10:17:12, fields actor.ip and user.name",
+		"took 30.1s, version 1.2.3, at 10:17:12",
 		"from " + m.toFake["10.20.30.1"] + " to " + m.toFake["bastion1.corp.fisni.com"],
 	} {
 		if m.leaks(text) {
@@ -204,10 +204,18 @@ func TestGuardStopsWhatMaskingMissed(t *testing.T) {
 	if err == nil || len(r.sent) != 0 {
 		t.Errorf("sent anyway: %v %q", err, r.sent)
 	}
-	// Two-part field names are left for the model to read.
+	// Every dotted name is replaced, with no list of top-level names to slip
+	// past: an internal or new one (fisni.ai, db01.fisni) is a host too.
 	m = newMasker(nil)
-	if out := m.mask(`{"actor.ip":"x","user.name":"y","db01.lan":"z"}`); !strings.Contains(out, "actor.ip") || !strings.Contains(out, "user.name") || strings.Contains(out, "db01.lan") {
-		t.Errorf("field names = %q", out)
+	in := `{"actor.ip":"x"} fisni.ai acme.co corp.us db01.fisni db01.lan`
+	out := m.mask(in)
+	for _, real := range []string{"actor.ip", "fisni.ai", "acme.co", "corp.us", "db01.fisni", "db01.lan"} {
+		if strings.Contains(out, real) {
+			t.Errorf("%q kept in %q", real, out)
+		}
+	}
+	if m.unmask(out) != in {
+		t.Errorf("unmask = %q", m.unmask(out))
 	}
 }
 
