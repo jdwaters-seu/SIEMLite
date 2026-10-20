@@ -3,6 +3,8 @@ package ai
 import (
 	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -131,3 +133,45 @@ func TestOllamaAddressIsChecked(t *testing.T) {
 		t.Errorf("a 200 that isn't Ollama: %v", err)
 	}
 }
+
+// recorder is a model that keeps everything it is sent and answers with a
+// pattern built from the stand-ins it was shown.
+type recorder struct{ sent []string }
+
+func (r *recorder) chat(_ context.Context, msgs []map[string]string, _ any) (string, error) {
+	for _, m := range msgs {
+		r.sent = append(r.sent, m["content"])
+	}
+	return `{"pattern":"{message}","fields":{},"category":6,"severity":{"from":"auto"}}`, nil
+}
+
+// TestNothingLeaksThroughTheDraft: the draft SIEMLite writes from the real
+// lines is sent too, so it must never hold part of an address. Lines that
+// share a network, a domain, a vendor or a prefix are where it would.
+func TestNothingLeaksThroughTheDraft(t *testing.T) {
+	sets := [][]string{
+		{"host=10.20.30.1:443 accepted", "host=10.20.30.9:80 accepted", "host=10.20.30.77:8080 accepted"},
+		{"conn bastion1.corp.fisni.com ok", "conn bastion2.corp.fisni.com ok"},
+		{"mail bob@fisni.com sent", "mail alice@fisni.com sent"},
+		{"peer fd12:3456:789a::1 up", "peer fd12:3456:789a::2 up"},
+		{"dev aa:bb:cc:00:11:22 joined", "dev aa:bb:cc:00:11:99 joined"},
+		{"src=10.20.30.1 dst=10.20.31.2", "src=10.20.30.5 dst=10.20.31.9"},
+		{`{"ip":"10.20.30.1","host":"db1.fisni.com"}`, `{"ip":"10.20.30.2","host":"db2.fisni.com"}`},
+	}
+	fragments := []string{"10.20.3", "20.30.", "fisni", "bastion", "fd12", "3456", "789a", "aa:bb:cc", "aa-bb-cc"}
+	for _, lines := range sets {
+		r := &recorder{}
+		if _, err := suggest(context.Background(), newMasker(r), slogDiscard(), lines); err != nil {
+			t.Fatal(err)
+		}
+		for _, sent := range r.sent {
+			for _, f := range fragments {
+				if strings.Contains(strings.ToLower(sent), f) {
+					t.Errorf("lines %q: %q was sent in:\n%s", lines, f, sent)
+				}
+			}
+		}
+	}
+}
+
+func slogDiscard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }

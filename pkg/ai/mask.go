@@ -3,10 +3,9 @@ package ai
 import (
 	"context"
 	"fmt"
-	"net/netip"
-	"regexp"
-	"strconv"
 	"strings"
+
+	"siemlite/pkg/parser"
 )
 
 // Before sample lines go to a cloud model, IP, email and MAC addresses and
@@ -16,19 +15,13 @@ import (
 // before it is used, so a pattern that kept an address as literal text still
 // matches the real lines.
 
+// The address patterns are parser's, which also keeps them whole in drafts.
 var (
-	// No word boundaries: an address run together with other text
-	// (ip10.0.0.1, src_10.0.0.1) must still be found. Replacing too much is
-	// harmless, since the answer is changed back; replacing too little leaks.
-	emailRe = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*`)
-	ipv4Re  = regexp.MustCompile(`\d{1,3}(?:\.\d{1,3}){3}`)
-	// A run of hex digits and colons with at least two colons; only runs
-	// that are whole IPv6 addresses are changed (not times or MAC addresses).
-	ipv6Re = regexp.MustCompile(`(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}`)
-	macRe  = regexp.MustCompile(`(?i)[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}`)
-	// Dotted names whose last part is a word: host names, and things that look
-	// like them (index.html, java.lang.String), which is harmless.
-	hostRe = regexp.MustCompile(`(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,23}[a-z0-9]`)
+	emailRe = parser.EmailRe
+	ipv4Re  = parser.IPv4Re
+	ipv6Re  = parser.IPv6Re
+	macRe   = parser.MACRe
+	hostRe  = parser.HostRe
 )
 
 type masker struct {
@@ -75,11 +68,12 @@ func (m *masker) unmask(s string) string {
 		}
 		return v
 	}
-	s = emailRe.ReplaceAllStringFunc(s, back)
-	s = ipv4Re.ReplaceAllStringFunc(s, back)
+	// The reverse of mask's order.
+	s = hostRe.ReplaceAllStringFunc(s, back)
 	s = ipv6Re.ReplaceAllStringFunc(s, back)
 	s = macRe.ReplaceAllStringFunc(s, back)
-	return hostRe.ReplaceAllStringFunc(s, back)
+	s = ipv4Re.ReplaceAllStringFunc(s, back)
+	return emailRe.ReplaceAllStringFunc(s, back)
 }
 
 func (m *masker) mask(s string) string {
@@ -87,20 +81,13 @@ func (m *masker) mask(s string) string {
 		return m.fake(e, func() string { m.nEmail++; return fmt.Sprintf("user%d@example.com", m.nEmail) })
 	})
 	s = ipv4Re.ReplaceAllStringFunc(s, func(v string) string {
-		if !octets(v) {
+		if !parser.IPv4Address(v) {
 			return v
 		}
-		return m.fake(v, func() string {
+		return m.fake(v, func() string { // 198.18.0.0/15, set aside for testing
 			m.n4++
-			nets := []string{"192.0.2", "198.51.100", "203.0.113"}
-			return fmt.Sprintf("%s.%d", nets[(m.n4-1)/250%3], (m.n4-1)%250+1)
+			return fmt.Sprintf("198.%d.%d.%d", 18+m.n4>>16&1, m.n4>>8&0xff, m.n4&0xff)
 		})
-	})
-	s = ipv6Re.ReplaceAllStringFunc(s, func(v string) string {
-		if a, err := netip.ParseAddr(v); err != nil || !a.Is6() {
-			return v
-		}
-		return m.fake(v, func() string { m.n6++; return fmt.Sprintf("2001:db8::%x", m.n6) })
 	})
 	s = macRe.ReplaceAllStringFunc(s, func(v string) string {
 		return m.fake(v, func() string {
@@ -108,9 +95,15 @@ func (m *masker) mask(s string) string {
 			return fmt.Sprintf("00:00:5e:%02x:%02x:%02x", 0x53+m.nMAC>>16&0xff, m.nMAC>>8&0xff, m.nMAC&0xff)
 		})
 	})
+	s = ipv6Re.ReplaceAllStringFunc(s, func(v string) string {
+		if !parser.IPv6Address(v) {
+			return v
+		}
+		return m.fake(v, func() string { m.n6++; return fmt.Sprintf("2001:db8::%x", m.n6) })
+	})
 	s = hostRe.ReplaceAllStringFunc(s, func(v string) string {
 		l := strings.ToLower(v)
-		if m.toReal[v] != "" || strings.HasSuffix(l, "example.com") || strings.HasSuffix(l, "example.net") {
+		if m.toReal[v] != "" || l == "example.com" || l == "example.net" || strings.HasSuffix(l, ".example.com") || strings.HasSuffix(l, ".example.net") {
 			return v // a stand-in, or inside one
 		}
 		return m.fake(v, func() string { m.nHost++; return fmt.Sprintf("host%d.example.net", m.nHost) })
@@ -122,6 +115,9 @@ func (m *masker) fake(real string, next func() string) string {
 	if f, ok := m.toFake[real]; ok {
 		return f
 	}
+	if m.toReal[real] != "" {
+		return real // already a stand-in, from an earlier step
+	}
 	seen := m.seen.String()
 	f := next()
 	for i := 0; i < 1000 && (strings.Contains(seen, f) || m.toReal[f] != ""); i++ {
@@ -129,20 +125,4 @@ func (m *masker) fake(real string, next func() string) string {
 	}
 	m.toFake[real], m.toReal[f] = f, real
 	return f
-}
-
-// octets reports whether s is four numbers of at most 255, leading zeros
-// allowed (010.000.000.001 is still an address to a reader).
-func octets(s string) bool {
-	parts := strings.Split(s, ".")
-	if len(parts) != 4 {
-		return false
-	}
-	for _, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n > 255 {
-			return false
-		}
-	}
-	return true
 }
