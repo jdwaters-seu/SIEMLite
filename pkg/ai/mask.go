@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/netip"
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -16,8 +17,11 @@ import (
 // matches the real lines.
 
 var (
-	emailRe = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}`)
-	ipv4Re  = regexp.MustCompile(`\b(?:\d{1,3}\.){3}\d{1,3}\b`)
+	// No word boundaries: an address run together with other text
+	// (ip10.0.0.1, src_10.0.0.1) must still be found. Replacing too much is
+	// harmless, since the answer is changed back; replacing too little leaks.
+	emailRe = regexp.MustCompile(`[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*`)
+	ipv4Re  = regexp.MustCompile(`\d{1,3}(?:\.\d{1,3}){3}`)
 	// A run of hex digits and colons with at least two colons; only runs
 	// that are whole IPv6 addresses are changed (not times or MAC addresses).
 	ipv6Re = regexp.MustCompile(`(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}`)
@@ -76,7 +80,7 @@ func (m *masker) mask(s string) string {
 		return m.fake(e, func() string { m.nEmail++; return fmt.Sprintf("user%d@example.com", m.nEmail) })
 	})
 	s = ipv4Re.ReplaceAllStringFunc(s, func(v string) string {
-		if a, err := netip.ParseAddr(v); err != nil || !a.Is4() {
+		if !octets(v) {
 			return v
 		}
 		return m.fake(v, func() string {
@@ -105,4 +109,20 @@ func (m *masker) fake(real string, next func() string) string {
 	}
 	m.toFake[real], m.toReal[f] = f, real
 	return f
+}
+
+// octets reports whether s is four numbers of at most 255, leading zeros
+// allowed (010.000.000.001 is still an address to a reader).
+func octets(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 4 {
+		return false
+	}
+	for _, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n > 255 {
+			return false
+		}
+	}
+	return true
 }

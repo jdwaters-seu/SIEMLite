@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"regexp"
 	"strings"
 	"sync"
@@ -219,7 +218,7 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 	if v.CloudModel == "" {
 		v.CloudModel = RecommendedCloud[0]
 	}
-	if v.Provider != ProviderCloud {
+	if v.Provider != ProviderCloud && CheckOllamaURL(v.OllamaURL) == nil {
 		o := newOllama(v.OllamaURL, "")
 		qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		models, err := o.models(qctx)
@@ -300,9 +299,8 @@ func (s *Service) Save(ctx context.Context, in Settings, key *string) error {
 	}
 	switch in.Provider {
 	case ProviderLocal:
-		u, err := url.Parse(in.OllamaURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") {
-			return InputError("The Ollama address must be an http or https address with no path, such as http://ollama:11434.")
+		if err := CheckOllamaURL(in.OllamaURL); err != nil {
+			return InputError(capitalize(err.Error()) + ".")
 		}
 		if !localModelRe.MatchString(in.LocalModel) {
 			return InputError("Choose a model, or enter an Ollama model name such as qwen2.5-coder:3b.")
@@ -459,7 +457,7 @@ func (s *Service) check(ctx context.Context) {
 		return
 	}
 	want := ""
-	if configured(st) && !st.Disabled && st.Provider == ProviderLocal {
+	if configured(st) && !st.Disabled && st.Provider == ProviderLocal && CheckOllamaURL(st.OllamaURL) == nil {
 		want = st.OllamaURL + "|" + st.LocalModel
 	}
 	s.mu.Lock()
@@ -592,6 +590,9 @@ type TestResult struct {
 func (s *Service) Test(ctx context.Context, in Settings, key *string) (TestResult, error) {
 	switch in.Provider {
 	case ProviderLocal:
+		if err := CheckOllamaURL(in.OllamaURL); err != nil {
+			return TestResult{}, InputError(capitalize(err.Error()) + ".")
+		}
 		o := newOllama(strings.TrimSpace(in.OllamaURL), in.LocalModel)
 		qctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
@@ -655,4 +656,11 @@ func (s *Service) CloudModels(ctx context.Context) ([]CloudModel, error) {
 	s.cloud, s.cloudAt = models, time.Now()
 	s.mu.Unlock()
 	return models, nil
+}
+
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }

@@ -8,8 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -26,7 +30,62 @@ type ollama struct {
 }
 
 func newOllama(url, model string) *ollama {
-	return &ollama{url: strings.TrimRight(url, "/"), model: model, http: &http.Client{Timeout: 5 * time.Minute}}
+	return &ollama{url: strings.TrimRight(url, "/"), model: model, http: &http.Client{Timeout: 5 * time.Minute, Transport: ollamaTransport}}
+}
+
+// ollamaTransport won't connect to link-local or cloud metadata addresses,
+// whatever name leads there: an Ollama address is never one, and a request
+// there could read the server's cloud credentials. Redirects aren't followed.
+var ollamaTransport = &http.Transport{
+	Proxy: nil,
+	DialContext: (&net.Dialer{Timeout: 10 * time.Second, Control: func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		a, err := netip.ParseAddr(host)
+		if err != nil {
+			return err
+		}
+		if forbiddenAddr(a.Unmap()) {
+			return fmt.Errorf("%s is a link-local or cloud metadata address, which can't be an Ollama server", a)
+		}
+		return nil
+	}}).DialContext,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ResponseHeaderTimeout: 5 * time.Minute,
+}
+
+func forbiddenAddr(a netip.Addr) bool {
+	return a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsMulticast() || a.IsUnspecified() ||
+		a == netip.MustParseAddr("100.100.100.200") || a == netip.MustParseAddr("fd00:ec2::254")
+}
+
+// CheckOllamaURL is the one check for an Ollama address, wherever it is used.
+func CheckOllamaURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("the Ollama address must be an http or https address with no path, such as http://ollama:11434")
+	}
+	if a, err := netip.ParseAddr(strings.Trim(u.Hostname(), "[]")); err == nil && forbiddenAddr(a.Unmap()) {
+		return errors.New("the Ollama address can't be a link-local or cloud metadata address")
+	}
+	return nil
+}
+
+// ollamaError is Ollama's own error message, never the raw body of whatever answered.
+func ollamaError(path, status string, body []byte) error {
+	var e struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &e) == nil && e.Error != "" {
+		if len(e.Error) > 200 {
+			e.Error = e.Error[:200]
+		}
+		return fmt.Errorf("ollama %s: %s: %s", path, status, e.Error)
+	}
+	return fmt.Errorf("ollama %s: %s", path, status)
 }
 
 func (o *ollama) chat(ctx context.Context, msgs []map[string]string, schema any) (string, error) {
@@ -92,14 +151,14 @@ func (o *ollama) pull(ctx context.Context, progress func(status string, done, to
 	if err != nil {
 		return err
 	}
-	resp, err := (&http.Client{}).Do(req) // no timeout: downloads take minutes
+	resp, err := (&http.Client{Transport: ollamaTransport}).Do(req) // no timeout: downloads take minutes
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return fmt.Errorf("ollama: %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		return ollamaError("/api/pull", resp.Status, b)
 	}
 	last := ""
 	sc := bufio.NewScanner(resp.Body)
@@ -152,9 +211,12 @@ func (o *ollama) call(ctx context.Context, method, path string, in, out any) err
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ollama %s: %s: %s", path, resp.Status, strings.TrimSpace(string(b)))
+		return ollamaError(path, resp.Status, b)
 	}
-	return json.Unmarshal(b, out)
+	if err := json.Unmarshal(b, out); err != nil {
+		return fmt.Errorf("ollama %s: the answer isn't from Ollama", path)
+	}
+	return nil
 }
 
 // --- OpenRouter, in the cloud ---
