@@ -54,6 +54,9 @@ func suggest(ctx context.Context, ch chatter, log *slog.Logger, lines []string) 
 			". Their fields are: " + strings.Join(names, ", ") + "\n\nSample lines:\n" + strings.Join(bodies, "\n")
 		def, _, err := ask(ctx, ch, []map[string]string{{"role": "system", "content": mappingPrompt}, {"role": "user", "content": prompt}}, mappingSchema)
 		base.Fields = obviousMappings(base, bodies)
+		if errors.Is(err, errCouldntMask) {
+			return nil, err
+		}
 		if err != nil {
 			log.Warn("AI field mapping failed; using automatic mapping", "err", err)
 		} else {
@@ -94,6 +97,9 @@ func suggest(ctx context.Context, ch chatter, log *slog.Logger, lines []string) 
 	names := placeholders(draft.Pattern)
 	for attempt := 1; attempt <= 2; attempt++ {
 		def, raw, err := ask(ctx, ch, msgs, schema)
+		if errors.Is(err, errCouldntMask) {
+			return nil, err
+		}
 		if err != nil {
 			log.Warn("AI parser suggestion attempt failed", "attempt", attempt, "err", err)
 			break

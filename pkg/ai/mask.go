@@ -52,6 +52,12 @@ func (m *masker) chat(ctx context.Context, msgs []map[string]string, schema any)
 		c["content"] = m.mask(c["content"])
 		masked[i] = c
 	}
+	// Last check, on exactly what is about to be sent.
+	for _, c := range masked {
+		if m.leaks(c["content"]) {
+			return "", errCouldntMask
+		}
+	}
 	out, err := m.next.chat(ctx, masked, schema)
 	if err != nil {
 		return "", err
@@ -102,6 +108,9 @@ func (m *masker) mask(s string) string {
 		return m.fake(v, func() string { m.n6++; return fmt.Sprintf("2001:db8::%x", m.n6) })
 	})
 	s = hostRe.ReplaceAllStringFunc(s, func(v string) string {
+		if !parser.HostName(v) {
+			return v
+		}
 		l := strings.ToLower(v)
 		if m.toReal[v] != "" || l == "example.com" || l == "example.net" || strings.HasSuffix(l, ".example.com") || strings.HasSuffix(l, ".example.net") {
 			return v // a stand-in, or inside one
@@ -126,3 +135,86 @@ func (m *masker) fake(real string, next func() string) string {
 	m.toFake[real], m.toReal[f] = f, real
 	return f
 }
+
+// errCouldntMask stops a request rather than send an address.
+var errCouldntMask = InputError("Some addresses in these lines couldn't be hidden, so nothing was sent to the cloud. Remove them from the sample lines, or use a model on this server.")
+
+// leaks reports whether text about to be sent still holds an address that
+// isn't a stand-in, or a piece of a real address that was replaced (such as a
+// network prefix or a domain left as literal text). It looks at the final
+// text with the same patterns the draft uses, so it doesn't depend on how the
+// text got that way.
+func (m *masker) leaks(text string) bool {
+	for _, sp := range parser.AddressSpans(text) {
+		if !m.standIn(text[sp[0]:sp[1]]) {
+			return true
+		}
+	}
+	low := strings.ToLower(text)
+	for real := range m.toFake {
+		for _, f := range fragments(real) {
+			if strings.Contains(low, f) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// standIn reports whether v is a stand-in, part of one, or the name it lives under.
+func (m *masker) standIn(v string) bool {
+	if m.toReal[v] != "" {
+		return true
+	}
+	l := strings.ToLower(v)
+	if l == "example.com" || l == "example.net" || strings.HasSuffix(l, ".example.com") || strings.HasSuffix(l, ".example.net") {
+		return true
+	}
+	for f := range m.toReal {
+		if strings.Contains(f, v) {
+			return true
+		}
+	}
+	return false
+}
+
+// fragments are the telling pieces of a real address: runs of at least three
+// parts of an IPv4, IPv6 or MAC address, and pieces of a name that are host
+// names themselves (fisni.com, corp.fisni.com), lowercased. Short or generic pieces are left
+// out so ordinary numbers don't trip the check.
+func fragments(real string) []string {
+	l := strings.ToLower(real)
+	if i := strings.LastIndex(l, "@"); i >= 0 {
+		l = l[i+1:] // an email address: its domain
+	}
+	var sep string
+	min := 3
+	switch {
+	case parser.IPv4Re.MatchString(l) && parser.IPv4Address(l):
+		sep = "."
+	case strings.Count(l, ":") >= 2:
+		sep = ":"
+	case strings.Count(l, "-") == 5 && len(l) == 17:
+		sep = "-"
+	default:
+		sep, min = ".", 2
+	}
+	parts := strings.Split(l, sep)
+	var out []string
+	for n := min; n < len(parts); n++ {
+		for i := 0; i+n <= len(parts); i++ {
+			f := strings.Join(parts[i:i+n], sep)
+			if len(strings.Trim(f, sep)) < 5 || generic[f] {
+				continue
+			}
+			if sep == "." && min == 2 && !parser.HostName(f) {
+				continue // user.name, from actor.user.name, is a field name, not part of a host
+			}
+			out = append(out, f)
+		}
+	}
+	return out
+}
+
+// generic name pieces that say nothing about a network.
+var generic = map[string]bool{"co.uk": true, "com.au": true, "co.jp": true, "co.nz": true, "com.br": true, "example.com": true, "example.net": true}

@@ -54,6 +54,28 @@ func IPv4Address(v string) bool {
 	return true
 }
 
+// HostName reports whether a run HostRe found should be treated as a host
+// name: three or more parts (bastion.corp.example), or two ending in a
+// common or internal top-level name (example.com, db01.lan). Two-part field
+// names such as actor.ip or user.name aren't.
+func HostName(v string) bool {
+	labels := strings.Split(strings.ToLower(v), ".")
+	if len(labels) >= 3 {
+		return true
+	}
+	return len(labels) == 2 && hostTLDs[labels[1]]
+}
+
+var hostTLDs = map[string]bool{}
+
+func init() {
+	for _, t := range strings.Fields(`com net org edu gov mil int io co biz info me tv cloud app dev tech online site xyz
+		local localdomain localhost lan internal intranet corp home homelab arpa private priv test example invalid
+		uk de fr nl be ch at se no dk fi pl cz es pt it ie ca au nz jp cn kr in br mx ru za sg hk tw`) {
+		hostTLDs[t] = true
+	}
+}
+
 // AddressSpans returns where address-like text is in s, as [start, end) pairs.
 func AddressSpans(s string) [][2]int {
 	var out [][2]int
@@ -68,7 +90,7 @@ func AddressSpans(s string) [][2]int {
 	add(IPv4Re, IPv4Address)
 	add(IPv6Re, IPv6Address)
 	add(MACRe, nil)
-	add(HostRe, nil)
+	add(HostRe, HostName)
 	return out
 }
 
