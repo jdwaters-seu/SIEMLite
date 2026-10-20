@@ -339,6 +339,26 @@
   .integ-switch { padding: 0; gap: 8px; font-size: 13.5px; }
   .integ-switch input:disabled ~ .track { opacity: .45; }
   .integ-body { border-top: 1px solid var(--rule); padding: 18px 20px; }
+  .ai-pane { display: grid; gap: 14px; }
+  .ai-models { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }
+  .ai-model { position: relative; display: grid; gap: 4px; align-content: start; padding: 12px 14px; border: 1px solid var(--rule); border-radius: 8px; cursor: pointer; }
+  .ai-model:hover { background: var(--raised); }
+  .ai-model:has(input:checked) { border-color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink); }
+  .ai-model:has(input:focus-visible) { outline: 2px solid var(--ink); outline-offset: 2px; }
+  .ai-model input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
+  .ai-model b { font-weight: 600; }
+  .ai-model .mono { color: var(--ink-2); font-size: 12.5px; }
+  .ai-model .hint { font-size: 12.5px; }
+  .ai-model .tags { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 2px; }
+  .ai-model .tags .pill { font-size: 11.5px; }
+  .pill.strong { color: var(--ink); box-shadow: inset 0 0 0 1px var(--ink-2); }
+  .ai-model.too-big { opacity: .6; }
+  .ai-model .input { margin-top: 4px; height: 32px; }
+  .ai-bar { height: 6px; border-radius: 3px; background: var(--raised); overflow: hidden; }
+  .ai-bar span { display: block; height: 100%; width: 0; background: var(--ink); transition: width .4s; }
+  .ai-pull { display: grid; gap: 6px; }
+  .check { display: flex; align-items: baseline; gap: 8px; font-size: 14px; }
+  #ai-form .seg { justify-self: start; }
   .mail { display: grid; gap: 16px; }
   .howto { border: 1px solid var(--rule); border-radius: 8px; padding: 10px 14px; font-size: 14px; }
   .howto summary { cursor: pointer; font-weight: 600; }
@@ -800,7 +820,7 @@
           <textarea id="pe-samples" rows="7" spellcheck="false" placeholder="Paste a few log lines from this source, one per line"></textarea>
           <div class="ai-row" id="pe-ai" hidden>
             <button type="button" class="btn" id="pe-suggest">Suggest a parser</button>
-            <span class="hint" id="pe-ai-status">A local AI model reads the sample lines and fills in the parser.</span>
+            <span class="hint" id="pe-ai-status">An AI model reads the sample lines and fills in the parser.</span>
           </div>
           <h2>Preview</h2>
           <p class="hint" id="pe-preview-summary">Add sample lines to see how they&rsquo;re read.</p>
@@ -933,6 +953,61 @@
             <label class="switch integ-switch"><span>On</span><input type="checkbox" id="entra-only" disabled aria-labelledby="entra-only-title"><span class="track"></span></label>
           </div>
           <p class="notice" id="entra-only-msg" role="status" hidden></p>
+        </div>
+      </section>
+      <section class="panel integ" id="int-ai" data-integration="ai" aria-labelledby="int-ai-title">
+        <div class="integ-head">
+          <div class="integ-title"><h2 id="int-ai-title">AI Parsers</h2><span class="pill integ-state">…</span></div>
+          <p class="hint integ-summary">Suggest a parser from sample log lines, with a model on this server or in the cloud.</p>
+          <div class="integ-controls">
+            <label class="switch integ-switch"><span>On</span><input type="checkbox" disabled><span class="track"></span></label>
+            <button class="btn integ-toggle" type="button" aria-expanded="false" aria-controls="int-ai-body">Set up</button>
+          </div>
+        </div>
+        <div class="integ-body" id="int-ai-body" hidden>
+          <form class="mail" id="ai-form" autocomplete="off">
+            <p class="hint" id="ai-status">Checking…</p>
+            <div class="seg" role="group" aria-label="Where the model runs">
+              <button type="button" data-ai-provider="local" aria-pressed="true">On this server</button>
+              <button type="button" data-ai-provider="openrouter" aria-pressed="false">In the cloud (OpenRouter)</button>
+            </div>
+            <div class="ai-pane" id="ai-local">
+              <p class="hint">The model runs with <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a>, so log lines never leave your network. With Docker, start it by adding <code>ai</code> to <code>COMPOSE_PROFILES</code> in <code>.env</code>.</p>
+              <p class="hint" id="ai-hw"></p>
+              <div class="ai-models" id="ai-models" role="radiogroup" aria-label="Model"></div>
+              <div class="mail-grid">
+                <label class="field-label wide-2">Ollama address
+                  <input class="input" id="ai-ollama" placeholder="http://ollama:11434" spellcheck="false" autocapitalize="off">
+                </label>
+              </div>
+              <p class="hint" id="ai-ollama-state"></p>
+              <div class="ai-pull" id="ai-pull" hidden>
+                <div class="ai-bar"><span id="ai-pull-bar"></span></div>
+                <p class="hint" id="ai-pull-text"></p>
+              </div>
+            </div>
+            <div class="ai-pane" id="ai-cloud" hidden>
+              <p class="mail-warn">The sample lines you ask about are sent to <a href="https://openrouter.ai" target="_blank" rel="noopener">OpenRouter</a> and the company that runs the model. SIEMLite asks only for providers that don't keep or train on what they're sent.</p>
+              <div class="mail-grid">
+                <label class="field-label wide-2">OpenRouter API key <span class="muted">(create one at <a href="https://openrouter.ai/keys" target="_blank" rel="noopener">openrouter.ai/keys</a>)</span>
+                  <input class="input" id="ai-key" type="password" autocomplete="new-password" spellcheck="false">
+                </label>
+                <label class="field-label wide-2">Model
+                  <select class="select" id="ai-cloud-model"></select>
+                </label>
+                <label class="field-label wide-2" id="ai-cloud-other-wrap" hidden>Model ID
+                  <input class="input" id="ai-cloud-other" placeholder="provider/model" spellcheck="false" autocapitalize="off">
+                </label>
+              </div>
+              <label class="check"><input type="checkbox" id="ai-mask" checked> Replace IP, email and MAC addresses and host names before sending <span class="muted">(recommended: the lines keep their shape, and the answer is changed back)</span></label>
+            </div>
+            <div class="mail-actions">
+              <button class="btn btn-primary" type="submit" id="ai-save">Save</button>
+              <button class="btn" type="button" id="ai-test">Test connection</button>
+              <button class="link-btn" type="button" id="ai-remove-key" hidden>Remove the OpenRouter key</button>
+            </div>
+            <p class="notice" id="ai-msg" role="status" hidden></p>
+          </form>
         </div>
       </section>
     </section>
@@ -2493,7 +2568,9 @@ async function openParserEditor(arg) {
   pe("template").replaceChildren(el("option", { value: "", textContent: editId ? "Replace with a template" : "Start from scratch" }),
     ...templates.map((t, i) => el("option", { value: String(i), textContent: t.name })));
   pe("ai").hidden = !(me.ai && me.ai.enabled);
-  pe("ai-status").textContent = me.ai && me.ai.ready ? "A local AI model reads the sample lines and fills in the parser." : "The AI model is still downloading. It'll be ready in a few minutes.";
+  pe("ai-status").textContent = !(me.ai && me.ai.ready) ? "The AI model is still downloading. It'll be ready in a few minutes."
+    : me.ai.provider === "openrouter" ? "A cloud AI model (through OpenRouter) reads the sample lines and fills in the parser."
+    : "An AI model on this server reads the sample lines and fills in the parser.";
   let def = { name: "", format: "pattern", pattern: "", severity: { from: "auto" }, category: 6, samples: [] };
   if (editId) {
     try { def = (await apiJSON(`/api/v1/parsers/${editId}`)).definition; }
@@ -2908,7 +2985,7 @@ async function refreshIntegrationCards() {
 async function openIntegrations() {
   notice($("integrations-msg"), "");
   await refreshIntegrationCards();
-  await Promise.all([loadMail(), loadEntra()]);
+  await Promise.all([loadMail(), loadEntra(), loadAI()]);
 }
 function toggleIntegration(btn, open) {
   const body = $(btn.getAttribute("aria-controls"));
@@ -2927,6 +3004,159 @@ for (const sw of document.querySelectorAll(".integ-switch input")) {
     await refreshIntegrationCards();
   };
 }
+
+// --- AI Parsers ---
+let aiView = null, aiProvider = "local", aiPoll = 0, aiCloudModels = null;
+const gbText = (b) => (b / 2 ** 30 >= 10 ? Math.round(b / 2 ** 30) : Math.round(b / 2 ** 30 * 10) / 10) + " GB";
+async function loadAI() {
+  try { aiFill(await apiJSON("/api/v1/integrations/ai")); }
+  catch (err) { $("ai-status").textContent = err.message; }
+}
+function aiPick(p) {
+  aiProvider = p;
+  for (const b of document.querySelectorAll("[data-ai-provider]")) b.setAttribute("aria-pressed", String(b.dataset.aiProvider === p));
+  $("ai-local").hidden = p !== "local";
+  $("ai-cloud").hidden = p !== "openrouter";
+  if (p === "openrouter") loadCloudModels();
+}
+for (const b of document.querySelectorAll("[data-ai-provider]")) b.onclick = () => aiPick(b.dataset.aiProvider);
+function aiFill(v, keepForm) {
+  aiView = v;
+  const hw = v.hardware || {};
+  if (!keepForm) {
+    aiPick(v.provider || "local");
+    $("ai-ollama").value = v.ollama_url || "";
+    $("ai-mask").checked = !v.send_addresses;
+    $("ai-key").value = "";
+    renderAIModels(v.local_model || v.recommended);
+    aiCloudSelect(v.cloud_model);
+  } else renderAIModels(aiChosenLocal());
+  $("ai-key").placeholder = v.key_unreadable ? "Enter it again" : v.has_key ? "Saved. Leave blank to keep it" : "sk-or-…";
+  $("ai-remove-key").hidden = !v.has_key;
+  $("ai-hw").textContent = (hw.cpus ? `This server has ${hw.cpus} CPU ${hw.cpus === 1 ? "core" : "cores"}` : "This server") +
+    (hw.memory ? ` and ${gbText(hw.memory)} of memory` : "") + (hw.gpu ? ", and Ollama is using a GPU." : ". No GPU has been seen yet.") +
+    ` ${(v.catalog.find((c) => c.name === v.recommended) || {}).label || v.recommended} is recommended for it.` +
+    " This is the server SIEMLite runs on; if Ollama runs elsewhere, choose for that machine.";
+  const o = v.ollama;
+  $("ai-ollama-state").textContent = !o ? "" : o.reachable
+    ? `Ollama is reachable${o.installed && o.installed.length ? ", with " + o.installed.map((m) => m.name).join(", ") + " downloaded" : ", with no models downloaded yet"}.`
+    : `Ollama can't be reached at this address (${o.error}). With Docker, add ai to COMPOSE_PROFILES in .env and run docker compose up -d.`;
+  const p = v.pull, pulling = p && p.running && p.model === (v.local_model || "");
+  $("ai-pull").hidden = !(p && p.model === v.local_model && (p.running || p.error));
+  if (p) {
+    const pct = p.total ? Math.floor(p.completed * 100 / p.total) : 0;
+    $("ai-pull-bar").style.width = (p.running ? pct : p.error ? 0 : 100) + "%";
+    $("ai-pull-text").textContent = p.error ? `The download of ${p.model} failed: ${p.error}. It will be tried again.`
+      : p.running ? `Downloading ${p.model}: ${p.total ? `${gbText(p.completed)} of ${gbText(p.total)} (${pct}%)` : p.status}. This happens once.` : "";
+  }
+  const st = $("ai-status");
+  if (!v.configured) st.textContent = "Not set up. Choose where the model runs and save to turn it on.";
+  else if (!v.enabled) st.textContent = "Set up, but turned off, so the Parsers page doesn't offer suggestions.";
+  else if (v.provider === "openrouter") st.textContent = v.key_unreadable ? "The saved OpenRouter key can't be read on this server (it may have come from a backup), so enter it again and save." : `On: suggestions come from ${v.cloud_model} through OpenRouter.`;
+  else st.textContent = v.ready ? `On: suggestions come from ${v.local_model} on this server.` : pulling ? "On, and downloading the model. Suggestions start when it's done." : "On, but waiting for Ollama and the model.";
+  clearTimeout(aiPoll);
+  if (v.enabled && v.provider === "local" && !v.ready && !$("view-integrations").hidden)
+    aiPoll = setTimeout(async () => { try { aiFill(await apiJSON("/api/v1/integrations/ai"), true); refreshIntegrationCards(); } catch {} }, pulling ? 2000 : 10000);
+}
+function aiChosenLocal() {
+  const r = document.querySelector('[name="ai-model"]:checked');
+  if (!r) return "";
+  return r.value === "other" ? $("ai-model-other").value.trim() : r.value;
+}
+function renderAIModels(chosen) {
+  const v = aiView, hw = v.hardware || {};
+  const installed = new Set(((v.ollama && v.ollama.installed) || []).flatMap((m) => [m.name, m.name.replace(/:latest$/, "")]));
+  const inCatalog = v.catalog.some((c) => c.name === chosen);
+  const card = (value, title, mono, note, tags, extra) => {
+    const input = el("input", { type: "radio", name: "ai-model", value, checked: value === "other" ? !inCatalog && !!chosen : value === chosen });
+    return el("label", { className: "ai-model" + (tags.includes("Too big") ? " too-big" : "") }, input,
+      el("b", { textContent: title }), el("span", { className: "mono", textContent: mono }),
+      note ? el("span", { className: "hint", textContent: note }) : "",
+      tags.length ? el("span", { className: "tags" }, ...tags.map((t) => el("span", { className: "pill" + (t === "Recommended" ? " strong" : ""), textContent: t }))) : "",
+      extra || "");
+  };
+  const cards = v.catalog.map((c) => {
+    const tags = [];
+    if (c.name === v.recommended) tags.push("Recommended");
+    if (installed.has(c.name)) tags.push("Downloaded");
+    if (hw.memory && c.memory > hw.memory) tags.push("Too big");
+    return card(c.name, c.label, c.name, `${gbText(c.download)} download, needs ${gbText(c.memory)} of memory. ${c.note}`, tags);
+  });
+  const other = el("input", { className: "input", id: "ai-model-other", placeholder: "e.g. llama3.2:3b", value: inCatalog ? "" : chosen || "", spellcheck: false });
+  other.oninput = () => { document.querySelector('[name="ai-model"][value="other"]').checked = true; };
+  cards.push(card("other", "Another model", "Any Ollama model name", "It must be able to answer in a JSON shape.", [], other));
+  $("ai-models").replaceChildren(...cards);
+}
+async function loadCloudModels() {
+  if (aiCloudModels) return;
+  try {
+    const r = await apiJSON("/api/v1/integrations/ai/cloud-models");
+    aiCloudModels = r.models;
+  } catch (err) { aiCloudModels = []; notice($("ai-msg"), "Couldn't load OpenRouter's model list: " + err.message + ". You can still enter a model ID."); }
+  aiCloudSelect(aiCurrentCloud() || (aiView && aiView.cloud_model));
+}
+function aiCurrentCloud() {
+  const s = $("ai-cloud-model");
+  return s.value === "__other" ? $("ai-cloud-other").value.trim() : s.value;
+}
+function aiCloudSelect(chosen) {
+  const rec = (aiView && aiView.cloud_recommended) || [];
+  const byId = new Map((aiCloudModels || []).map((m) => [m.id, m]));
+  const price = (m) => m ? (m.free ? " (free)" : m.prompt ? ` ($${m.prompt} / $${m.output} per million tokens)` : "") : "";
+  const opt = (id, label) => el("option", { value: id, textContent: label });
+  const groups = [el("optgroup", { label: "Recommended: small, fast and inexpensive" }, ...rec.map((id) => opt(id, (byId.get(id) || {}).name ? `${byId.get(id).name}${price(byId.get(id))}` : id)))];
+  const rest = (aiCloudModels || []).filter((m) => !rec.includes(m.id)).sort((a, b) => a.name.localeCompare(b.name));
+  if (rest.length) groups.push(el("optgroup", { label: "All models that can answer in a JSON shape" }, ...rest.map((m) => opt(m.id, m.name + price(m)))));
+  groups.push(opt("__other", "Another model ID…"));
+  const s = $("ai-cloud-model");
+  s.replaceChildren(...groups);
+  const known = [...s.options].some((o) => o.value === chosen);
+  s.value = known ? chosen : chosen ? "__other" : rec[0];
+  $("ai-cloud-other").value = known ? "" : chosen || "";
+  $("ai-cloud-other-wrap").hidden = s.value !== "__other";
+}
+$("ai-cloud-model").onchange = () => { $("ai-cloud-other-wrap").hidden = $("ai-cloud-model").value !== "__other"; if (!$("ai-cloud-other-wrap").hidden) $("ai-cloud-other").focus(); };
+function aiBody() {
+  const b = { provider: aiProvider, ollama_url: $("ai-ollama").value.trim(), local_model: aiChosenLocal(), cloud_model: aiCurrentCloud(), send_addresses: !$("ai-mask").checked };
+  if ($("ai-key").value.trim()) b.openrouter_key = $("ai-key").value.trim();
+  return b;
+}
+function aiBusy(on) { for (const id of ["ai-save", "ai-test", "ai-remove-key"]) $(id).disabled = on; }
+$("ai-form").onsubmit = async (e) => {
+  e.preventDefault();
+  if (aiProvider === "openrouter" && !$("ai-mask").checked &&
+      !(await confirmAction("Send addresses as they are?", "IP, email and MAC addresses and host names in the sample lines will be sent to OpenRouter and the model's provider unchanged.", "Send them"))) return;
+  aiBusy(true);
+  try {
+    aiFill(await apiJSON("/api/v1/integrations/ai", { method: "PUT", json: aiBody() }));
+    notice($("ai-msg"), aiProvider === "local" && !aiView.ready ? "Saved. The model downloads in the background; its progress is shown here." : "Saved. Suggestions are available on the Parsers page.", true);
+    refreshIntegrationCards();
+  } catch (err) { notice($("ai-msg"), err.message); }
+  aiBusy(false);
+};
+$("ai-test").onclick = async () => {
+  aiBusy(true);
+  notice($("ai-msg"), aiProvider === "local" ? "Connecting to Ollama…" : "Checking the key with OpenRouter…", true);
+  try {
+    const r = await apiJSON("/api/v1/integrations/ai/test", { method: "POST", json: aiBody() });
+    if (r.provider === "local") notice($("ai-msg"), `Connected to Ollama. ${r.has_model ? "The model is downloaded." : "The model isn't downloaded yet; it downloads when you save."}`, true);
+    else notice($("ai-msg"), `The key works${r.key_label ? ` (${r.key_label})` : ""}${r.credit_left != null ? `, with $${r.credit_left.toFixed(2)} of its limit left` : ""}.` +
+      (r.model_known === false ? " OpenRouter doesn't list that model as able to answer in a JSON shape, so suggestions may fail." : "") + " These settings are not saved until you choose Save.", r.model_known !== false);
+  } catch (err) { notice($("ai-msg"), err.message); }
+  aiBusy(false);
+};
+$("ai-remove-key").onclick = async () => {
+  if (!(await confirmAction("Remove the OpenRouter key?", "SIEMLite forgets the key. Cloud suggestions stop until you enter one again.", "Remove"))) return;
+  aiBusy(true);
+  try {
+    const b = { ...aiBody(), openrouter_key: "" };
+    if (b.provider === "openrouter") b.provider = "local";
+    aiFill(await apiJSON("/api/v1/integrations/ai", { method: "PUT", json: b }));
+    notice($("ai-msg"), "Removed the key. AI Parsers now uses this server.", true);
+    refreshIntegrationCards();
+  } catch (err) { notice($("ai-msg"), err.message); }
+  aiBusy(false);
+};
 
 // --- Sign-in restrictions (Users page and the Entra card) ---
 let signin = null;

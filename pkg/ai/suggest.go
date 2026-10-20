@@ -1,166 +1,22 @@
-// Package ai suggests parsers from sample log lines using a local model
-// served by Ollama (https://ollama.com). Nothing leaves your network: the
-// model runs wherever Ollama runs, typically next to SIEMLite.
+// Package ai suggests parsers from sample log lines: the AI Parsers
+// integration. The model runs on this server with Ollama (https://ollama.com),
+// where nothing leaves your network, or in the cloud through OpenRouter
+// (https://openrouter.ai), with addresses replaced before lines are sent.
 package ai
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"net/netip"
 	"regexp"
 	"sort"
 	"strings"
-	"sync/atomic"
-	"time"
 
 	"siemlite/pkg/parser"
 )
-
-// DefaultModel is small enough for a CPU and good at structured output.
-const DefaultModel = "qwen2.5-coder:3b"
-
-// Client talks to an Ollama server.
-type Client struct {
-	URL   string
-	Model string
-	http  *http.Client
-	log   *slog.Logger
-	ready atomic.Bool // the model is downloaded
-}
-
-// New returns a client for the Ollama server at url (e.g. http://ollama:11434).
-func New(url, model string, log *slog.Logger) *Client {
-	if model == "" {
-		model = DefaultModel
-	}
-	if log == nil {
-		log = slog.Default()
-	}
-	return &Client{URL: strings.TrimRight(url, "/"), Model: model, http: &http.Client{Timeout: 5 * time.Minute}, log: log}
-}
-
-// Status describes whether suggestions are available.
-type Status struct {
-	Enabled bool   `json:"enabled"`
-	Model   string `json:"model,omitempty"`
-	Ready   bool   `json:"ready"`
-}
-
-// Status reports the client's state; a nil client is disabled.
-func (c *Client) Status() Status {
-	if c == nil {
-		return Status{}
-	}
-	return Status{Enabled: true, Model: c.Model, Ready: c.ready.Load()}
-}
-
-// Prepare checks that the model is downloaded and, if not, downloads it,
-// retrying until ctx is done (Ollama may still be starting).
-func (c *Client) Prepare(ctx context.Context) {
-	for attempt := 0; ; attempt++ {
-		err := c.ensureModel(ctx)
-		if err == nil {
-			c.ready.Store(true)
-			c.log.Info("AI parser help is ready", "model", c.Model, "url", c.URL)
-			return
-		}
-		if attempt == 0 || attempt%10 == 0 {
-			c.log.Warn("AI parser help not ready yet; retrying", "url", c.URL, "model", c.Model, "err", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(15 * time.Second):
-		}
-	}
-}
-
-func (c *Client) ensureModel(ctx context.Context) error {
-	var tags struct {
-		Models []struct {
-			Name string `json:"name"`
-		} `json:"models"`
-	}
-	if err := c.call(ctx, http.MethodGet, "/api/tags", nil, &tags); err != nil {
-		return err
-	}
-	for _, m := range tags.Models {
-		if m.Name == c.Model || m.Name == c.Model+":latest" {
-			return nil
-		}
-	}
-	c.log.Info("downloading AI model; this happens once", "model", c.Model)
-	body, _ := json.Marshal(map[string]any{"model": c.Model, "stream": true})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.URL+"/api/pull", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	resp, err := (&http.Client{}).Do(req) // no timeout: downloads take minutes
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	last := ""
-	sc := bufio.NewScanner(resp.Body)
-	for sc.Scan() {
-		var st struct {
-			Status string `json:"status"`
-			Error  string `json:"error"`
-		}
-		if json.Unmarshal(sc.Bytes(), &st) == nil {
-			if st.Error != "" {
-				return errors.New(st.Error)
-			}
-			if st.Status != last && !strings.HasPrefix(st.Status, "pulling ") {
-				last = st.Status
-				c.log.Info("AI model download", "status", st.Status)
-			}
-		}
-	}
-	if err := sc.Err(); err != nil {
-		return err
-	}
-	if last != "success" {
-		return fmt.Errorf("model download ended with %q", last)
-	}
-	return nil
-}
-
-func (c *Client) call(ctx context.Context, method, path string, in, out any) error {
-	var body io.Reader
-	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, c.URL+path, body)
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
-	if err != nil {
-		return err
-	}
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("ollama %s: %s: %s", path, resp.Status, strings.TrimSpace(string(b)))
-	}
-	return json.Unmarshal(b, out)
-}
 
 // Suggestion is a proposed parser and how well it fits the samples.
 type Suggestion struct {
@@ -170,20 +26,11 @@ type Suggestion struct {
 	Attempts   int               `json:"attempts"`
 }
 
-// ErrNotReady means the model is still downloading or Ollama is down.
-var ErrNotReady = errors.New("the AI model isn't ready yet")
-
 // Suggest proposes a parser for the sample lines. Work a program can do
 // reliably is done here, not by the model: syslog headers are detected and
 // removed, and JSON or key=value lines are recognised, so the model only
 // writes a pattern for free text, or maps fields and picks severity.
-func (c *Client) Suggest(ctx context.Context, lines []string) (*Suggestion, error) {
-	if c == nil {
-		return nil, errors.New("AI help is not configured")
-	}
-	if !c.ready.Load() {
-		return nil, ErrNotReady
-	}
+func suggest(ctx context.Context, ch chatter, log *slog.Logger, lines []string) (*Suggestion, error) {
 	var samples []string
 	for _, l := range lines {
 		if l = strings.TrimSpace(l); l != "" && len(samples) < 12 {
@@ -205,10 +52,10 @@ func (c *Client) Suggest(ctx context.Context, lines []string) (*Suggestion, erro
 		names := fieldNames(base, bodies)
 		prompt := "These log lines are " + map[string]string{"json": "JSON objects", "kv": "key=value pairs"}[format] +
 			". Their fields are: " + strings.Join(names, ", ") + "\n\nSample lines:\n" + strings.Join(bodies, "\n")
-		def, _, err := c.ask(ctx, []map[string]string{{"role": "system", "content": mappingPrompt}, {"role": "user", "content": prompt}}, mappingSchema)
+		def, _, err := ask(ctx, ch, []map[string]string{{"role": "system", "content": mappingPrompt}, {"role": "user", "content": prompt}}, mappingSchema)
 		base.Fields = obviousMappings(base, bodies)
 		if err != nil {
-			c.log.Warn("AI field mapping failed; using automatic mapping", "err", err)
+			log.Warn("AI field mapping failed; using automatic mapping", "err", err)
 		} else {
 			for k, v := range keepKnown(def.Fields, names) {
 				base.Fields[k] = v
@@ -246,9 +93,9 @@ func (c *Client) Suggest(ctx context.Context, lines []string) (*Suggestion, erro
 	}
 	names := placeholders(draft.Pattern)
 	for attempt := 1; attempt <= 2; attempt++ {
-		def, raw, err := c.ask(ctx, msgs, schema)
+		def, raw, err := ask(ctx, ch, msgs, schema)
 		if err != nil {
-			c.log.Warn("AI parser suggestion attempt failed", "attempt", attempt, "err", err)
+			log.Warn("AI parser suggestion attempt failed", "attempt", attempt, "err", err)
 			break
 		}
 		def.Format, def.StripSyslog, def.Name = parser.FormatPattern, strip, base.Name
@@ -448,25 +295,17 @@ func feedback(def parser.Definition, bodies []string) string {
 	return sb.String()
 }
 
-func (c *Client) ask(ctx context.Context, msgs []map[string]string, format any) (parser.Definition, string, error) {
-	var out struct {
-		Message struct {
-			Content string `json:"content"`
-		} `json:"message"`
-	}
-	err := c.call(ctx, http.MethodPost, "/api/chat", map[string]any{
-		"model": c.Model, "messages": msgs, "stream": false, "format": format,
-		"options": map[string]any{"temperature": 0.1},
-	}, &out)
+func ask(ctx context.Context, ch chatter, msgs []map[string]string, format any) (parser.Definition, string, error) {
+	content, err := ch.chat(ctx, msgs, format)
 	if err != nil {
 		return parser.Definition{}, "", err
 	}
 	var def parser.Definition
-	if err := json.Unmarshal([]byte(out.Message.Content), &def); err != nil {
+	if err := json.Unmarshal([]byte(content), &def); err != nil {
 		return parser.Definition{}, "", fmt.Errorf("the model's answer wasn't a parser: %w", err)
 	}
 	def.Name = "Suggested parser"
-	return def, out.Message.Content, nil
+	return def, content, nil
 }
 
 // score compiles def and tests it on the samples.

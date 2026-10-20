@@ -117,8 +117,8 @@ func run() error {
 	syslogTCP := flag.String("syslog-tcp", "", "syslog TCP listen address, e.g. :514 (off when empty)")
 	syslogTLS := flag.String("syslog-tls", "", "syslog over TLS listen address, e.g. :6514 (off when empty)")
 	syslogAllow := flag.String("syslog-allow", "", "comma-separated networks allowed to send syslog (default: loopback and private ranges)")
-	aiURL := flag.String("ai-url", "", "Ollama server for AI parser help, e.g. http://ollama:11434 (off when empty)")
-	aiModel := flag.String("ai-model", ai.DefaultModel, "Ollama model for AI parser help")
+	aiURL := flag.String("ai-url", "", "Ollama server for AI Parsers, e.g. http://ollama:11434: turns it on with this server until the Integrations page saves its own settings")
+	aiModel := flag.String("ai-model", ai.DefaultModel, "Ollama model for AI Parsers, with -ai-url")
 	updateCheck := flag.Bool("update-check", true, "check GitHub for new releases and offer updates on the System page")
 	backupDir := flag.String("backup-dir", "", "folder for database backups (default: <db dir>/backups)")
 	if err := flagsFromEnv(flag.CommandLine); err != nil {
@@ -261,16 +261,14 @@ func run() error {
 		defer wg.Done()
 		alertEngine.Run(bgCtx, 10*time.Second)
 	}()
-	var aiClient *ai.Client
-	if *aiURL != "" {
-		aiClient = ai.New(*aiURL, *aiModel, nil)
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			aiClient.Prepare(bgCtx)
-		}()
-		slog.Info("AI parser help enabled", "url", *aiURL, "model", *aiModel)
-	}
+	// AI Parsers: set up on the Integrations page; -ai-url and -ai-model are
+	// its settings until the page saves its own.
+	aiSvc := ai.NewService(repo, secret.NewBox(secret.KeyPath(*dbPath)), ai.Defaults{OllamaURL: *aiURL, Model: *aiModel}, slog.Default())
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		aiSvc.Run(bgCtx)
+	}()
 
 	backups, err := backup.New(*backupDir, db, repo, nil)
 	if err != nil {
@@ -380,8 +378,8 @@ func run() error {
 	}
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine,
-		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiClient,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Proxies: proxies, LocalAddr: *localAddr, Certs: certMgr, Audit: auditLog, Alerts: alertEngine,
+		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiSvc,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc, aiSvc), Entra: entraSvc, Proxies: proxies, LocalAddr: *localAddr, Certs: certMgr, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:

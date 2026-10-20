@@ -54,7 +54,7 @@ type Deps struct {
 	Intel  *intel.Service  // optional
 	Syslog *syslogd.Server // optional
 	Router *sources.Router // per-source parsers (required)
-	AI     *ai.Client      // optional parser suggestions
+	AI     *ai.Service     // the AI Parsers integration (optional)
 	// Backups, Started and Restart serve the System page (optional).
 	Backups *backup.Manager
 	Started time.Time
@@ -187,6 +187,10 @@ func (s *Server) Handler() http.Handler {
 	admin("PUT /api/v1/integrations/entra", s.handleSaveEntra)
 	admin("POST /api/v1/integrations/entra/test", s.handleTestEntra)
 	admin("POST /api/v1/integrations/entra/sync", s.handleSyncEntra)
+	admin("GET /api/v1/integrations/ai", s.handleGetAI)
+	admin("PUT /api/v1/integrations/ai", s.handleSaveAI)
+	admin("POST /api/v1/integrations/ai/test", s.handleTestAI)
+	admin("GET /api/v1/integrations/ai/cloud-models", s.handleCloudModels)
 	// Where email's settings were before the Integrations page (v0.10).
 	admin("GET /api/v1/system/email", s.handleGetEmail)
 	admin("PUT /api/v1/system/email", s.handleSaveEmail)

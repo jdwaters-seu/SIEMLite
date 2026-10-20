@@ -275,6 +275,7 @@ func commonEdges(col []string) (string, string) {
 	} else {
 		suf = suf[idx:]
 	}
+	pre, suf = keepAddressesWhole(col, pre, suf)
 	for _, w := range col {
 		if len(w) < len(pre)+len(suf)+1 {
 			return pre, ""
