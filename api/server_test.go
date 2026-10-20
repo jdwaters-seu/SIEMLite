@@ -15,6 +15,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"siemlite/api"
+	"siemlite/pkg/ai"
 	"siemlite/pkg/alerts"
 	"siemlite/pkg/audit"
 	"siemlite/pkg/auth"
@@ -67,6 +68,7 @@ func newEnvWith(t *testing.T, change func(*api.Deps)) *env {
 	entraSvc := entra.NewService(repo, repo, secret.NewBox(filepath.Join(t.TempDir(), "entra.key")), nil)
 	entraSvc.Authority, entraSvc.Graph = ms.URL, ms.URL+"/v1.0"
 	emailSvc := email.NewService(repo, filepath.Join(t.TempDir(), "k.key"))
+	aiSvc := ai.NewService(repo, secret.NewBox(filepath.Join(t.TempDir(), "ai.key")), ai.Defaults{}, nil)
 	engine := alerts.New(repo, nil)
 	certDir := t.TempDir()
 	certFile, keyFile := filepath.Join(certDir, "t.crt"), filepath.Join(certDir, "t.key")
@@ -82,7 +84,7 @@ func newEnvWith(t *testing.T, change func(*api.Deps)) *env {
 	}
 	deps := api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: search.NewEngine(repo), Auth: auth.New(repo, nil), Router: router,
-		Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc), Entra: entraSvc, Certs: certMgr, Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
+		Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc, aiSvc), Entra: entraSvc, AI: aiSvc, Certs: certMgr, Version: "v0.0-test", Audit: audit.New(worker, router, nil), Alerts: engine,
 	}
 	if change != nil {
 		change(&deps)

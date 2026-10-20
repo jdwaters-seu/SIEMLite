@@ -735,10 +735,6 @@ func (s *Server) handleTestParser(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSuggestParser(w http.ResponseWriter, r *http.Request) {
-	if s.deps.AI == nil {
-		writeError(w, http.StatusNotFound, "AI help isn't set up. Set SIEMLITE_AI_URL to an Ollama server to turn it on.")
-		return
-	}
 	var req struct {
 		Lines []string `json:"lines"`
 	}
@@ -750,7 +746,14 @@ func (s *Server) handleSuggestParser(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)
 	defer cancel()
 	sug, err := s.deps.AI.Suggest(ctx, req.Lines)
+	var bad ai.InputError
 	switch {
+	case errors.Is(err, ai.ErrOff):
+		writeError(w, http.StatusNotFound, "AI Parsers is off. An admin can set it up and turn it on on the Integrations page.")
+		return
+	case errors.As(err, &bad):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	case errors.Is(err, ai.ErrNotReady):
 		writeError(w, http.StatusServiceUnavailable, "The AI model is still downloading or Ollama isn't reachable. Try again in a few minutes.")
 		return
@@ -758,6 +761,14 @@ func (s *Server) handleSuggestParser(w http.ResponseWriter, r *http.Request) {
 		s.deps.Logger.Warn("parser suggestion failed", "err", err)
 		writeError(w, http.StatusBadGateway, "The AI model couldn't suggest a parser: "+err.Error())
 		return
+	}
+	if p := auth.FromContext(r.Context()); p != nil {
+		st := s.deps.AI.Status()
+		where := map[string]string{ai.ProviderCloud: "OpenRouter"}[st.Provider]
+		if where == "" {
+			where = "this server"
+		}
+		s.audit(r, audit.Entry{Action: "parser.suggest", Message: fmt.Sprintf("%s asked for a parser suggestion from %d sample lines (model %s, %s)", p.Name, len(req.Lines), st.Model, where)})
 	}
 	writeJSON(w, http.StatusOK, sug)
 }

@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.18` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.19` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -136,7 +136,7 @@ usually within seconds, then who issued it and until when. Or set it from the st
 - **Users** (admins): add people, set their role, limit what they can see, change passwords, and keep the built-in admin account to the server itself.
 - **Sources** (admins): add sources (each gets an access token and ready-to-paste code), see when each source last sent logs, choose how each source's lines are read (Automatic, None or a parser), add logs by hand, and enable, disable or delete a token (Manage).
 - **Parsers** (admins): build, upload, export and edit parsers.
-- **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off: email, and sign-in with Microsoft Entra ID.
+- **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off: email, sign-in with Microsoft Entra ID, and AI Parsers.
 - **System** (admins): the version and whether a newer release is out (with an update button), the HTTPS certificate (self-signed or Let's Encrypt), database size and uptime, and backups: create, schedule, download, upload, restore and delete.
 - **Account** (everyone; select your name at the bottom of the sidebar): your role and what it lets you see, the theme (System, Light
   or Dark), signing out, and how you sign in: a local password, which you can change here, or Microsoft Entra ID.
@@ -244,6 +244,7 @@ the raw text.
 | `GET /api/v1/auth/providers`, `GET /api/v1/auth/entra/start`, `GET /api/v1/auth/entra/callback` | public | The sign-in page's "Continue with Microsoft": which buttons to show, where the browser is sent to sign in, and where Microsoft sends it back. Not for scripts. |
 | `GET`/`POST /api/v1/backups`, `PUT /api/v1/backups/settings`, `POST /api/v1/backups/upload` | admin | List backups and the job status, start a backup, set the schedule (`{"interval_hours": 0/6/24/168, "keep"}`), upload a backup file. |
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
+| `GET`/`PUT /api/v1/integrations/ai`, `POST /api/v1/integrations/ai/test`, `GET /api/v1/integrations/ai/cloud-models` | admin | The [AI Parsers](#ai-parsers) settings (`{"provider": "local"/"openrouter", "ollama_url", "local_model", "cloud_model", "send_addresses", "openrouter_key"}`; the key is write-only, leaving it out keeps the saved one and `""` removes it), with this server's hardware, the recommended model and the download's progress; a connection test (the same fields); and OpenRouter's models that can answer in a JSON shape. |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
 | `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`). A password sign-in refused by a [sign-in restriction](#sign-in-restrictions) gets `403`. |
 | `GET`/`PUT /api/v1/system/signin` | admin | The [sign-in restrictions](#sign-in-restrictions): `{"admin_local_only", "entra_only"}` (send either). The answer also says what is enforced now, the local port, and whether the request came in on it. Turning either on is refused without a local port; Microsoft-only also needs sign-in with Microsoft on and a local Admin account named `admin`. |
@@ -296,22 +297,32 @@ Build one on the Parsers page: paste a few sample lines, describe them, and the 
 - **Upload and export** parsers as small JSON files to share them or keep them in version control.
 - A line that doesn't match its source's parser is still stored, parsed as Automatic would, with a `parse_error` field.
 
-### AI help
+### AI Parsers
 
-With a local model running in [Ollama](https://ollama.com), the editor gets a **Suggest a parser** button. SIEMLite
-removes syslog headers and recognises JSON and key=value lines itself, drafts a pattern that matches every sample
-line, and asks the model to name the fields and pick severity and category. It keeps the model's answer only when it
-still reads every sample line. Nothing leaves your network.
+With the **AI Parsers** integration on, the parser editor gets a **Suggest a parser** button. SIEMLite removes syslog
+headers and recognises JSON and key=value lines itself, drafts a pattern that matches every sample line, and asks the
+model to name the fields and pick severity and category. It keeps the model's answer only when it still reads every
+sample line.
 
-With Docker, add to `.env` and run `docker compose up -d` (the model, about 2 GB, downloads once on first start):
+Set it up on the **Integrations** page, choosing where the model runs:
 
-```sh
-COMPOSE_PROFILES=ai
-SIEMLITE_AI_URL=http://ollama:11434
-```
+- **On this server**, with [Ollama](https://ollama.com). Nothing leaves your network. Choose a model size: the card shows
+  this server's CPU cores and memory, recommends the largest model that will answer in reasonable time on them, and marks
+  models that are too big. The chosen model downloads in the background (1 to 9 GB, once), with its progress on the card.
+  With Docker, start Ollama by adding `ai` to `COMPOSE_PROFILES` in `.env` and running `docker compose up -d`; its address is
+  `http://ollama:11434`. Without Docker, run Ollama yourself (`http://localhost:11434`). On a CPU, the medium model
+  (`qwen2.5-coder:3b`) takes about 10-40 seconds per suggestion. Any Ollama model that can answer in a JSON shape can be used.
+- **In the cloud**, with [OpenRouter](https://openrouter.ai) and your API key (from [openrouter.ai/keys](https://openrouter.ai/keys)).
+  Choose a model: the recommended ones are small, fast and inexpensive, and the full list shows every model that can answer
+  in a JSON shape, with its price. The sample lines you ask about are sent to OpenRouter and the model's provider, so:
+  - IP and email addresses are replaced before sending (on unless you turn it off). The stand-ins keep the lines' shape, and
+    the answer is changed back, so the parser fits the real lines. Other text, such as user and host names, is sent as written.
+  - SIEMLite asks OpenRouter to use only providers that don't keep or train on what they're sent.
+  - The key is encrypted like the [email](#email) password and never shown again.
 
-Without Docker, run Ollama yourself and start SIEMLite with `-ai-url http://localhost:11434`. The default model is
-`qwen2.5-coder:3b`, which runs on a CPU; a suggestion takes about 10-40 seconds there. Choose another with `-ai-model`.
+Turning the integration off hides the button; its settings are kept. Asking for a suggestion is recorded in the
+[audit log](#audit-log) (`parser.suggest`), and so are changes to the settings (`system.ai.save`). Before v0.19 this was
+set with `SIEMLITE_AI_URL`; that still works, as the starting settings, until the page saves its own.
 
 ## GeoIP and ASN
 
@@ -691,8 +702,8 @@ by spaces.
 | `-geoip-asn` | | MaxMind or DB-IP ASN `.mmdb` |
 | `-intel-feed` | | Threat intel feed as `name=https://url`; repeat for several |
 | `-intel-refresh` | `6h` | How often to re-download feeds |
-| `-ai-url` | | Ollama server for AI parser help, e.g. `http://ollama:11434` (off when empty) |
-| `-ai-model` | `qwen2.5-coder:3b` | Model for AI parser help; downloaded on first start if missing |
+| `-ai-url` | | Ollama server for [AI Parsers](#ai-parsers), e.g. `http://ollama:11434`: turns it on with this server until the Integrations page saves its own settings |
+| `-ai-model` | `qwen2.5-coder:3b` | Ollama model for AI Parsers, with `-ai-url` |
 | `-backup-dir` | `<db dir>/backups` | Folder for database backups |
 | `-update-check` | `true` | Check GitHub for new releases and offer updates on the System page |
 
