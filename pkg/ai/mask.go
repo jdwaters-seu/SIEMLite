@@ -9,10 +9,10 @@ import (
 	"strings"
 )
 
-// Before sample lines go to a cloud model, IP addresses and email addresses
-// are replaced with stand-ins of the same kind (documentation addresses and
-// example.com), the same value always by the same stand-in, so the lines keep
-// their shape and a pattern still fits them. The model's answer is changed back
+// Before sample lines go to a cloud model, IP, email and MAC addresses and
+// host names are replaced with stand-ins of the same kind (documentation
+// addresses, example.com and example.net), the same value always by the same
+// stand-in, so the lines keep their shape and a pattern still fits them. The model's answer is changed back
 // before it is used, so a pattern that kept an address as literal text still
 // matches the real lines.
 
@@ -25,12 +25,17 @@ var (
 	// A run of hex digits and colons with at least two colons; only runs
 	// that are whole IPv6 addresses are changed (not times or MAC addresses).
 	ipv6Re = regexp.MustCompile(`(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}`)
+	macRe  = regexp.MustCompile(`(?i)[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}`)
+	// Dotted names whose last part is a word: host names, and things that look
+	// like them (index.html, java.lang.String), which is harmless.
+	hostRe = regexp.MustCompile(`(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,23}[a-z0-9]`)
 )
 
 type masker struct {
 	next           chatter
 	toFake, toReal map[string]string
 	n4, n6, nEmail int
+	nMAC, nHost    int
 	seen           strings.Builder // everything sent, so a stand-in never equals a real value
 }
 
@@ -72,7 +77,9 @@ func (m *masker) unmask(s string) string {
 	}
 	s = emailRe.ReplaceAllStringFunc(s, back)
 	s = ipv4Re.ReplaceAllStringFunc(s, back)
-	return ipv6Re.ReplaceAllStringFunc(s, back)
+	s = ipv6Re.ReplaceAllStringFunc(s, back)
+	s = macRe.ReplaceAllStringFunc(s, back)
+	return hostRe.ReplaceAllStringFunc(s, back)
 }
 
 func (m *masker) mask(s string) string {
@@ -94,6 +101,19 @@ func (m *masker) mask(s string) string {
 			return v
 		}
 		return m.fake(v, func() string { m.n6++; return fmt.Sprintf("2001:db8::%x", m.n6) })
+	})
+	s = macRe.ReplaceAllStringFunc(s, func(v string) string {
+		return m.fake(v, func() string {
+			m.nMAC++
+			return fmt.Sprintf("00:00:5e:%02x:%02x:%02x", 0x53+m.nMAC>>16&0xff, m.nMAC>>8&0xff, m.nMAC&0xff)
+		})
+	})
+	s = hostRe.ReplaceAllStringFunc(s, func(v string) string {
+		l := strings.ToLower(v)
+		if m.toReal[v] != "" || strings.HasSuffix(l, "example.com") || strings.HasSuffix(l, "example.net") {
+			return v // a stand-in, or inside one
+		}
+		return m.fake(v, func() string { m.nHost++; return fmt.Sprintf("host%d.example.net", m.nHost) })
 	})
 	return s
 }

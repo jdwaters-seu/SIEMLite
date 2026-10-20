@@ -30,7 +30,7 @@ type ollama struct {
 }
 
 func newOllama(url, model string) *ollama {
-	return &ollama{url: strings.TrimRight(url, "/"), model: model, http: &http.Client{Timeout: 5 * time.Minute, Transport: ollamaTransport}}
+	return &ollama{url: strings.TrimRight(url, "/"), model: model, http: &http.Client{Timeout: 5 * time.Minute, Transport: ollamaTransport, CheckRedirect: noRedirects}}
 }
 
 // ollamaTransport won't connect to link-local or cloud metadata addresses,
@@ -56,8 +56,21 @@ var ollamaTransport = &http.Transport{
 	ResponseHeaderTimeout: 5 * time.Minute,
 }
 
+// Ollama never redirects; following one could lead anywhere.
+func noRedirects(*http.Request, []*http.Request) error {
+	return errors.New("Ollama doesn't redirect, so this isn't Ollama")
+}
+
+var nat64 = netip.MustParsePrefix("64:ff9b::/96")
+
 func forbiddenAddr(a netip.Addr) bool {
+	if nat64.Contains(a) { // an IPv4 address reached through NAT64
+		b := a.As16()
+		a = netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]})
+	}
+	a = a.Unmap()
 	return a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() || a.IsMulticast() || a.IsUnspecified() ||
+		(a.Is4() && a.As4()[0] == 0) ||
 		a == netip.MustParseAddr("100.100.100.200") || a == netip.MustParseAddr("fd00:ec2::254")
 }
 
@@ -74,18 +87,17 @@ func CheckOllamaURL(raw string) error {
 	return nil
 }
 
-// ollamaError is Ollama's own error message, never the raw body of whatever answered.
-func ollamaError(path, status string, body []byte) error {
-	var e struct {
-		Error string `json:"error"`
-	}
-	if json.Unmarshal(body, &e) == nil && e.Error != "" {
-		if len(e.Error) > 200 {
-			e.Error = e.Error[:200]
+// ollamaError says what went wrong without repeating anything the far end
+// sent, since the address might lead somewhere that isn't Ollama.
+func ollamaError(path string, code int) error {
+	switch code {
+	case http.StatusNotFound:
+		if path == "/api/tags" {
+			return fmt.Errorf("ollama %s: not found, so this isn't an Ollama server", path)
 		}
-		return fmt.Errorf("ollama %s: %s: %s", path, status, e.Error)
+		return fmt.Errorf("ollama %s: not found (is the model name right?)", path)
 	}
-	return fmt.Errorf("ollama %s: %s", path, status)
+	return fmt.Errorf("ollama %s: %d %s", path, code, http.StatusText(code))
 }
 
 func (o *ollama) chat(ctx context.Context, msgs []map[string]string, schema any) (string, error) {
@@ -151,14 +163,13 @@ func (o *ollama) pull(ctx context.Context, progress func(status string, done, to
 	if err != nil {
 		return err
 	}
-	resp, err := (&http.Client{Transport: ollamaTransport}).Do(req) // no timeout: downloads take minutes
+	resp, err := (&http.Client{Transport: ollamaTransport, CheckRedirect: noRedirects}).Do(req) // no timeout: downloads take minutes
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<10))
-		return ollamaError("/api/pull", resp.Status, b)
+		return ollamaError("/api/pull", resp.StatusCode)
 	}
 	last := ""
 	sc := bufio.NewScanner(resp.Body)
@@ -173,6 +184,9 @@ func (o *ollama) pull(ctx context.Context, progress func(status string, done, to
 			continue
 		}
 		if st.Error != "" {
+			if len(st.Error) > 200 {
+				st.Error = st.Error[:200]
+			}
 			return errors.New(st.Error)
 		}
 		last = st.Status
@@ -211,7 +225,7 @@ func (o *ollama) call(ctx context.Context, method, path string, in, out any) err
 		return err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return ollamaError(path, resp.Status, b)
+		return ollamaError(path, resp.StatusCode)
 	}
 	if err := json.Unmarshal(b, out); err != nil {
 		return fmt.Errorf("ollama %s: the answer isn't from Ollama", path)

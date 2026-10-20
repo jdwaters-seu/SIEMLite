@@ -2,8 +2,10 @@ package ai
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 )
@@ -26,8 +28,58 @@ func TestMaskerFindsEveryAddress(t *testing.T) {
 		}
 	}
 	m := newMasker(nil)
-	if out := m.mask("version 1.2.3 build 300.1.1.1 at 10:17:12"); !strings.Contains(out, "1.2.3 build 300.1.1.1") {
+	if out := m.mask("version 1.2.3 build 300.1.1.1 at 2026-10-03T10:17:12.123Z took 1.5s ssh2"); !strings.Contains(out, "1.2.3 build 300.1.1.1 at 2026-10-03T10:17:12.123Z took 1.5s ssh2") {
 		t.Errorf("things that aren't addresses were changed: %q", out)
+	}
+	// Host names (which can hold an address, as on EC2) and MAC addresses.
+	line := "conn from ip-10-0-0-1.ec2.internal to bastion.corp.fisni.com via db01.lan mac AA:BB:CC:00:11:22 or aa-bb-cc-00-11-23 user svc@fisni.com"
+	m = newMasker(nil)
+	out := m.mask(line)
+	for _, real := range []string{"ip-10-0-0-1", "ec2.internal", "fisni", "db01.lan", "AA:BB:CC:00:11:22", "aa-bb-cc-00-11-23"} {
+		if strings.Contains(out, real) {
+			t.Errorf("%q kept in %q", real, out)
+		}
+	}
+	if back := m.unmask(out); back != line {
+		t.Errorf("unmask = %q", back)
+	}
+	// Many distinct MAC addresses each get their own stand-in.
+	m = newMasker(nil)
+	var macs []string
+	for i := 0; i < 600; i++ {
+		macs = append(macs, fmt.Sprintf("02:00:00:00:%02x:%02x", i>>8, i&0xff))
+	}
+	all := strings.Join(macs, " ")
+	if back := m.unmask(m.mask(all)); back != all {
+		t.Error("MAC stand-ins collided")
+	}
+}
+
+// TestOllamaClientDoesntFollowRedirects: an answer that redirects goes nowhere.
+func TestOllamaClientDoesntFollowRedirects(t *testing.T) {
+	hit := false
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		w.Write([]byte(`{"models":[{"name":"internal-secret"}]}`))
+	}))
+	defer target.Close()
+	bounce := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+r.URL.Path, http.StatusFound)
+	}))
+	defer bounce.Close()
+	models, err := newOllama(bounce.URL, "").models(context.Background())
+	if err == nil || hit || len(models) != 0 {
+		t.Errorf("followed a redirect: %v %v hit=%v", models, err, hit)
+	}
+	for _, a := range []string{"64:ff9b::a9fe:a9fe", "::ffff:169.254.169.254", "0.1.2.3", "fe80::1"} {
+		if !forbiddenAddr(netip.MustParseAddr(a)) {
+			t.Errorf("%s allowed", a)
+		}
+	}
+	for _, a := range []string{"127.0.0.1", "10.0.0.5", "172.18.0.3", "::1", "64:ff9b::a00:5"} {
+		if forbiddenAddr(netip.MustParseAddr(a)) {
+			t.Errorf("%s refused", a)
+		}
 	}
 }
 

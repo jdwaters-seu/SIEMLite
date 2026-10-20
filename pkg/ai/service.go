@@ -34,8 +34,8 @@ type Settings struct {
 	OllamaURL  string `json:"ollama_url"`
 	LocalModel string `json:"local_model"`
 	CloudModel string `json:"cloud_model"`
-	// SendAddresses sends IP and email addresses to a cloud model as they
-	// are. Off (the default, and when left out) replaces them first.
+	// SendAddresses sends IP, email and MAC addresses and host names to a
+	// cloud model as they are. Off (the default, and when left out) replaces them first.
 	SendAddresses bool `json:"send_addresses"`
 }
 

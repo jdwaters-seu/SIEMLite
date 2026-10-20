@@ -339,8 +339,8 @@ func TestMasker(t *testing.T) {
 	if strings.Contains(out, "192.0.2.1 ") || strings.Contains(out, "192.0.2.1,") {
 		t.Errorf("a stand-in equals an address already in the text: %q", out)
 	}
-	if !strings.Contains(out, "10:17:12") || !strings.Contains(out, "aa:bb:cc:dd:ee:ff") {
-		t.Errorf("non-addresses changed: %q", out)
+	if !strings.Contains(out, "10:17:12") || strings.Contains(out, "aa:bb:cc:dd:ee:ff") {
+		t.Errorf("a time was changed, or a MAC address kept: %q", out)
 	}
 	if back := m.unmask(out); back != in {
 		t.Errorf("unmask = %q", back)

@@ -999,7 +999,7 @@
                   <input class="input" id="ai-cloud-other" placeholder="provider/model" spellcheck="false" autocapitalize="off">
                 </label>
               </div>
-              <label class="check"><input type="checkbox" id="ai-mask" checked> Replace IP and email addresses before sending <span class="muted">(recommended: the lines keep their shape, and the answer is changed back)</span></label>
+              <label class="check"><input type="checkbox" id="ai-mask" checked> Replace IP, email and MAC addresses and host names before sending <span class="muted">(recommended: the lines keep their shape, and the answer is changed back)</span></label>
             </div>
             <div class="mail-actions">
               <button class="btn btn-primary" type="submit" id="ai-save">Save</button>
@@ -3125,7 +3125,7 @@ function aiBusy(on) { for (const id of ["ai-save", "ai-test", "ai-remove-key"]) 
 $("ai-form").onsubmit = async (e) => {
   e.preventDefault();
   if (aiProvider === "openrouter" && !$("ai-mask").checked &&
-      !(await confirmAction("Send addresses as they are?", "IP and email addresses in the sample lines will be sent to OpenRouter and the model's provider unchanged.", "Send them"))) return;
+      !(await confirmAction("Send addresses as they are?", "IP, email and MAC addresses and host names in the sample lines will be sent to OpenRouter and the model's provider unchanged.", "Send them"))) return;
   aiBusy(true);
   try {
     aiFill(await apiJSON("/api/v1/integrations/ai", { method: "PUT", json: aiBody() }));
