@@ -175,3 +175,84 @@ func TestNothingLeaksThroughTheDraft(t *testing.T) {
 }
 
 func slogDiscard() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
+
+// TestGuardStopsWhatMaskingMissed: whatever way a piece of an address got
+// into the text, nothing is sent.
+func TestGuardStopsWhatMaskingMissed(t *testing.T) {
+	r := &recorder{}
+	m := newMasker(r)
+	m.mask("seen 10.20.30.1 and bastion1.corp.fisni.com") // replaced earlier in the conversation
+	for _, text := range []string{
+		"pattern host=10.20.30.{value}", // a network prefix
+		"conn {name}.corp.fisni.com",    // a domain
+		"mail {user}@fisni.com",         // a domain after a placeholder
+	} {
+		if !m.leaks(text) {
+			t.Errorf("not caught: %q", text)
+		}
+	}
+	for _, text := range []string{
+		"took 30.1s, version 1.2.3, at 10:17:12",
+		"from " + m.toFake["10.20.30.1"] + " to " + m.toFake["bastion1.corp.fisni.com"],
+	} {
+		if m.leaks(text) {
+			t.Errorf("false alarm: %q", text)
+		}
+	}
+	// Through chat: nothing reaches the model.
+	_, err := m.chat(context.Background(), []map[string]string{{"role": "user", "content": "pattern host=10.20.30.{value}"}}, nil)
+	if err == nil || len(r.sent) != 0 {
+		t.Errorf("sent anyway: %v %q", err, r.sent)
+	}
+	// Every dotted name is replaced, with no list of top-level names to slip
+	// past: an internal or new one (fisni.ai, db01.fisni) is a host too.
+	m = newMasker(nil)
+	in := `{"actor.ip":"x"} fisni.ai acme.co corp.us db01.fisni db01.lan`
+	out := m.mask(in)
+	for _, real := range []string{"actor.ip", "fisni.ai", "acme.co", "corp.us", "db01.fisni", "db01.lan"} {
+		if strings.Contains(out, real) {
+			t.Errorf("%q kept in %q", real, out)
+		}
+	}
+	if m.unmask(out) != in {
+		t.Errorf("unmask = %q", m.unmask(out))
+	}
+}
+
+// TestGuardLetsOrdinaryLogsThrough: everyday logs, full of addresses and
+// names, can still be sent once masked.
+func TestGuardLetsOrdinaryLogsThrough(t *testing.T) {
+	for _, lines := range [][]string{
+		{`203.0.113.7 - - [03/Oct/2026:10:17:12 +0000] "GET /index.html HTTP/1.1" 200 512 "-" "curl/8.1"`,
+			`198.51.100.23 - bob [03/Oct/2026:10:18:01 +0000] "POST /api/v1/login HTTP/2.0" 401 87 "https://siem.fisni.com/" "Mozilla/5.0"`},
+		{"Oct  3 10:20:01 bastion sshd[812]: Failed password for root from 10.20.30.7 port 51234 ssh2",
+			"Oct  3 10:20:05 bastion sshd[812]: Accepted publickey for alice from 10.20.30.8 port 40022 ssh2"},
+		{"action=block src=10.20.30.1 dst=172.16.5.9 proto=tcp dport=445 rule=deny-smb host=fw01.corp.fisni.com",
+			"action=allow src=10.20.30.2 dst=172.16.5.10 proto=udp dport=53 rule=dns host=fw01.corp.fisni.com"},
+		{`{"actor":{"ip":"10.20.30.1","user.name":"bob@fisni.com"},"host":"db1.fisni.com","mac":"aa:bb:cc:00:11:22","v":"1.2.3"}`,
+			`{"actor":{"ip":"10.20.30.2","user.name":"alice@fisni.com"},"host":"db2.fisni.com","mac":"aa:bb:cc:00:11:23","v":"1.2.3"}`},
+		{`CORP\jdoe logged on to WS-0142.corp.fisni.com from fe80::1c2b:3cff:fe4d:5e6f%eth0`,
+			`CORP\asmith logged on to WS-0177.corp.fisni.com from fe80::1c2b:3cff:fe4d:5e70%eth0`},
+	} {
+		r := &recorder{}
+		if _, err := suggest(context.Background(), newMasker(r), slogDiscard(), lines); err != nil {
+			t.Errorf("%q: %v", lines[0], err)
+			continue
+		}
+		if len(r.sent) == 0 {
+			t.Errorf("%q: nothing was sent", lines[0])
+		}
+	}
+}
+
+// TestRefusalIsReported: when the guard stops a request, the person is told,
+// rather than given SIEMLite's own draft as if the model had looked.
+func TestRefusalIsReported(t *testing.T) {
+	r := &recorder{}
+	m := newMasker(r)
+	m.mask("10.20.30.1") // so the prefix counts as part of a real address
+	_, err := suggest(context.Background(), m, slogDiscard(), []string{"x 10.20.30.{a} y", "x 10.20.30.{b} y"})
+	if err != errCouldntMask || len(r.sent) != 0 {
+		t.Errorf("err = %v, sent %d", err, len(r.sent))
+	}
+}

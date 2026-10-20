@@ -20,8 +20,10 @@ var (
 	// decides whether it is one (not a time).
 	IPv6Re = regexp.MustCompile(`(?i)[0-9a-f]{0,4}(?::[0-9a-f]{0,4}){2,7}`)
 	MACRe  = regexp.MustCompile(`(?i)[0-9a-f]{2}(?:[:-][0-9a-f]{2}){5}`)
-	// Dotted names whose last part is a word: host names, and things that look
-	// like them (index.html, java.lang.String).
+	// Dotted names whose last part is a word: host names, and everything that
+	// looks like one (index.html, java.lang.String, actor.ip). There is no list
+	// of top-level names to decide which are hosts: an internal one would slip
+	// through, so all of them count.
 	HostRe = regexp.MustCompile(`(?i)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,23}[a-z0-9]`)
 )
 
