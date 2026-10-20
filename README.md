@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.17` in `.env` and run `docker compose pull && docker compose up -d`.
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.18` in `.env` and run `docker compose pull && docker compose up -d`.
 Or build from the checkout, and deploy and upgrade with one command:
 
 ```sh
@@ -241,7 +241,7 @@ the raw text.
 | `POST /api/v1/integrations/{id}/enabled` | admin | Turn an integration on or off, keeping its settings: `{"enabled": true}`. Refused until it is set up. |
 | `GET`/`PUT /api/v1/integrations/email`, `POST /api/v1/integrations/email/test` | admin | The email settings (`{"host", "port", "security": "starttls"/"tls"/"none", "username", "password", "from_address", "from_name", "skip_verify"}`; the password is write-only, and leaving it out keeps the saved one) and a test send (the same fields plus `"to"`). These were `/api/v1/system/email` in v0.10, which still works. |
 | `GET`/`PUT /api/v1/integrations/entra`, `POST /api/v1/integrations/entra/test`, `POST /api/v1/integrations/entra/sync` | admin | The Microsoft Entra ID settings (`{"tenant_id", "client_id", "client_secret", "public_url", "access_group_id", "admin_group_id"}`; the client secret is write-only, and leaving it out keeps the saved one, but only for the same tenant and app), a connection test (the same fields; reports the groups it can read), and an immediate membership check. |
-| `GET /api/v1/auth/providers`, `GET /api/v1/auth/entra/start`, `GET /api/v1/auth/entra/callback` | public | The sign-in page's "Sign in with Microsoft": which buttons to show, where the browser is sent to sign in, and where Microsoft sends it back. Not for scripts. |
+| `GET /api/v1/auth/providers`, `GET /api/v1/auth/entra/start`, `GET /api/v1/auth/entra/callback` | public | The sign-in page's "Continue with Microsoft": which buttons to show, where the browser is sent to sign in, and where Microsoft sends it back. Not for scripts. |
 | `GET`/`POST /api/v1/backups`, `PUT /api/v1/backups/settings`, `POST /api/v1/backups/upload` | admin | List backups and the job status, start a backup, set the schedule (`{"interval_hours": 0/6/24/168, "keep"}`), upload a backup file. |
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
@@ -494,8 +494,8 @@ turning one on or off is recorded in the [audit log](#audit-log).
 
 ## Sign in with Microsoft (Entra ID)
 
-The **Integrations** page has a **Microsoft Entra ID** card. When it is on, the sign-in page offers **Sign in with Microsoft**, and the
-people in one Entra group can sign in with their work account. Everyone else is refused, even if they are in your organization.
+The **Integrations** page has a **Microsoft Entra ID** card. When it is on, the sign-in page leads with **Continue with Microsoft**
+(the password form is under **Other sign-in methods**), and the people in one Entra group can sign in with their work account. Everyone else is refused, even if they are in your organization.
 
 **Set it up.** The card has the steps; in short, in the Entra admin center:
 

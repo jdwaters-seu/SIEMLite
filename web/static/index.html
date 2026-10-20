@@ -20,6 +20,7 @@
     --paper: #f2f3f1; --surface: #ffffff; --raised: #e9ebe8; --ink: #1c1f21; --ink-2: #5f666b; --rule: #d9dcd8;
     --sev-0: #8a949b; --sev-1: #6c7a86; --sev-2: #2f8463; --sev-3: #85680f; --sev-4: #c35a1c; --sev-5: #c1333a; --sev-6: #8c2b69;
     --chart-other: #5f666b;
+    --login-art: #e6e8e4;
     --sans: "Instrument Sans", system-ui, sans-serif;
     --mono: "Spline Sans Mono", ui-monospace, monospace;
     --side: 236px;
@@ -30,6 +31,7 @@
       --paper: #1a1e21; --surface: #21262a; --raised: #2a3035; --ink: #e4e6e3; --ink-2: #8f979c; --rule: #30363a;
       --sev-0: #78828a; --sev-1: #8796a3; --sev-2: #49a985; --sev-3: #cfa52a; --sev-4: #e2793a; --sev-5: #e77478; --sev-6: #c0559a;
       --chart-other: #7d858a;
+      --login-art: #131619;
     }
   }
   :root[data-theme="dark"] {
@@ -37,6 +39,7 @@
     --paper: #1a1e21; --surface: #21262a; --raised: #2a3035; --ink: #e4e6e3; --ink-2: #8f979c; --rule: #30363a;
     --sev-0: #78828a; --sev-1: #8796a3; --sev-2: #49a985; --sev-3: #cfa52a; --sev-4: #e2793a; --sev-5: #e77478; --sev-6: #c0559a;
     --chart-other: #7d858a;
+    --login-art: #131619;
   }
 
   * { box-sizing: border-box; }
@@ -342,10 +345,6 @@
   .howto ol { margin: 10px 0 6px; padding-left: 22px; display: grid; gap: 6px; }
   .copy-row { display: flex; gap: 8px; }
   .copy-row .input { flex: 1; }
-  .sso-row { display: grid; gap: 14px; }
-  .sso-or { margin: 4px 0 0; display: flex; align-items: center; gap: 12px; color: var(--ink-2); font-size: 13px; }
-  .sso-or::before, .sso-or::after { content: ""; flex: 1; height: 1px; background: var(--rule); }
-  .login .sso-row .btn { height: 42px; justify-content: center; }
   .mail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 14px 16px; }
   .mail-grid .wide { grid-column: 1 / -1; }
   .mail-grid .wide-2 { grid-column: span 2; }
@@ -366,15 +365,34 @@
   .restarting h2 { font-size: 22px; margin: 16px 0 6px; }
   .restarting p { color: var(--ink-2); margin: 0; max-width: 44ch; }
 
-  /* Sign in */
-  .login { position: fixed; inset: 0; z-index: 20; display: grid; place-items: center; padding: 24px; background: var(--paper); }
-  .login form { width: min(360px, 100%); display: grid; gap: 14px; }
-  .login .wordmark { padding: 0; font-size: 26px; margin-bottom: 2px; }
-  .login p { margin: 0 0 8px; color: var(--ink-2); }
-  .login .input { width: 100%; height: 42px; }
-  .login .btn-primary { height: 42px; justify-content: center; margin-top: 4px; }
+  /* Sign in: the network on the left is decoration; everything to use is on the right. */
+  .login { position: fixed; inset: 0; z-index: 20; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); background: var(--paper); }
+  .login-art { position: relative; overflow: hidden; background: var(--login-art); }
+  .login-art canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .login-brand { position: absolute; left: clamp(28px, 6%, 72px); bottom: clamp(28px, 7%, 72px); }
+  .login-name { margin: 0; font-size: 34px; font-weight: 700; letter-spacing: .3em; text-transform: uppercase; line-height: 1.1; }
+  .login-tag { margin: 12px 0 0; font: 500 13px var(--mono); letter-spacing: .2em; text-transform: uppercase; color: var(--ink-2); }
+  .login-main { display: grid; align-items: center; padding: 48px clamp(24px, 9%, 120px); overflow-y: auto; }
+  .login form { width: min(400px, 100%); display: grid; gap: 22px; }
+  .login-title { margin: 0 0 10px; font-size: 40px; font-weight: 500; letter-spacing: -.02em; line-height: 1.1; }
   .login .notice { margin: 0; }
-  .login-pw { display: grid; gap: 14px; }
+  .login .input { width: 100%; height: 44px; }
+  .login-wide { width: 100%; height: 50px; justify-content: center; border-radius: 8px; font-size: 16px; }
+  .sso-row { display: grid; gap: 22px; }
+  .login-more { justify-self: start; display: inline-flex; align-items: center; gap: 8px; border: 0; background: none; padding: 2px 0;
+                color: var(--ink-2); cursor: pointer; font-size: 15px; }
+  .login-more:hover { color: var(--ink); }
+  .login-more svg { transition: transform .2s; }
+  .login-more[aria-expanded="true"] svg { transform: rotate(180deg); }
+  .login-pw { display: grid; gap: 16px; }
+  @media (max-width: 860px) {
+    .login { grid-template-columns: 1fr; grid-template-rows: 190px 1fr; }
+    .login-brand { bottom: 22px; }
+    .login-name { font-size: 26px; }
+    .login-tag { margin-top: 8px; font-size: 12px; }
+    .login-main { align-items: start; padding: 36px 24px; }
+    .login-title { font-size: 32px; }
+  }
   .restrict { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; }
   .restrict .hint { margin-top: 4px; max-width: 62ch; }
   .restrict .integ-switch { flex: none; margin-top: 2px; }
@@ -444,20 +462,29 @@
 </svg>
 
 <div id="login" class="login" hidden>
-  <form id="login-form">
-    <h1 class="wordmark">SIEMLite</h1>
-    <p>Sign in to search your logs.</p>
-    <div class="login-pw" id="login-pw">
-      <label class="field-label">Username <input class="input" id="username" autocomplete="username" required></label>
-      <label class="field-label">Password <input class="input" id="password" type="password" autocomplete="current-password" required></label>
-      <button class="btn btn-primary" type="submit" id="login-btn">Sign in</button>
+  <div class="login-art" aria-hidden="true">
+    <canvas id="login-net"></canvas>
+    <div class="login-brand">
+      <p class="login-name">SIEMLite</p>
+      <p class="login-tag">Logs, search and alerts</p>
     </div>
-    <p id="login-err" class="notice bad" role="alert" hidden></p>
-    <div id="sso-row" class="sso-row" hidden>
-      <p class="sso-or" id="sso-or"><span>or</span></p>
-      <a class="btn" id="sso-entra" href="/api/v1/auth/entra/start">Sign in with Microsoft</a>
-    </div>
-  </form>
+  </div>
+  <div class="login-main">
+    <form id="login-form">
+      <h1 class="login-title">Sign in</h1>
+      <p id="login-err" class="notice bad" role="alert" hidden></p>
+      <div id="sso-row" class="sso-row" hidden>
+        <a class="btn btn-primary login-wide" id="sso-entra" href="/api/v1/auth/entra/start">Continue with Microsoft</a>
+        <button class="login-more" type="button" id="login-more" aria-expanded="false" aria-controls="login-pw">Other sign-in methods
+          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </div>
+      <div class="login-pw" id="login-pw">
+        <label class="field-label">Username <input class="input" id="username" autocomplete="username" required></label>
+        <label class="field-label">Password <input class="input" id="password" type="password" autocomplete="current-password" required></label>
+        <button class="btn btn-primary login-wide" type="submit" id="login-btn">Sign in</button>
+      </div>
+    </form>
+  </div>
 </div>
 
 <div class="app" id="app">
@@ -1257,6 +1284,7 @@ function setTheme(choice) {
   try { choice === "system" ? localStorage.removeItem("siemlite-theme") : localStorage.setItem("siemlite-theme", choice); } catch {}
   for (const b of document.querySelectorAll("[data-theme-choice]")) b.setAttribute("aria-pressed", String(b.dataset.themeChoice === choice));
   if (lastStats) drawChart(lastStats); // colours come from CSS, but redraw keeps the tooltip in sync
+  loginNet.recolor();
 }
 for (const b of document.querySelectorAll("[data-theme-choice]")) b.onclick = () => setTheme(b.dataset.themeChoice);
 
@@ -1277,25 +1305,160 @@ function ssoErrorFromURL() {
   try { history.replaceState(null, "", location.pathname + location.hash); } catch {}
   return SSO_ERRORS[code] || SSO_ERRORS.failed;
 }
+// Which ways to sign in to offer. With Microsoft on, it is the main button and
+// the password form folds away under "Other sign-in methods" (open on the
+// server's local address, where the admin account signs in with a password).
+let providers = { entra: false, password: true, local: false }, pwOpen = false;
 async function loadProviders() {
   try {
     const res = await fetch("/api/v1/auth/providers", { credentials: "same-origin" });
-    const p = res.ok ? await res.json() : {};
-    $("sso-row").hidden = !p.entra;
-    // Only Microsoft sign-in here: no password form (the admin account signs in on the server's local address).
-    const pw = p.password !== false || !p.entra;
-    $("login-pw").hidden = !pw;
-    $("sso-or").hidden = !pw;
-    for (const id of ["username", "password"]) $(id).required = pw;
-  } catch { $("sso-row").hidden = true; }
+    providers = res.ok ? await res.json() : { entra: false, password: true };
+  } catch { providers = { entra: false, password: true }; }
+  renderLogin();
 }
-function showLogin(msg) {
-  loadProviders();
+function renderLogin() {
+  const sso = !!providers.entra, pw = providers.password !== false || !sso;
+  $("sso-row").hidden = !sso;
+  $("login-more").hidden = !(sso && pw);
+  const open = pw && (!sso || pwOpen || providers.local);
+  $("login-pw").hidden = !open;
+  $("login-more").setAttribute("aria-expanded", String(open));
+  $("login-btn").classList.toggle("btn-primary", !sso);
+  for (const id of ["username", "password"]) $(id).required = open;
+}
+$("login-more").onclick = () => {
+  pwOpen = $("login-pw").hidden;
+  renderLogin();
+  if (pwOpen) $("username").focus();
+};
+async function showLogin(msg) {
   $("login").hidden = false;
   $("login-err").hidden = !msg;
   $("login-err").textContent = msg || "";
-  $("username").focus();
+  loginNet.start();
+  await loadProviders();
+  if (document.activeElement && document.activeElement.closest && document.activeElement.closest("#login-form")) return;
+  ($("login-pw").hidden ? $("sso-entra") : $("username")).focus();
 }
+
+// The sign-in page's network: hosts drift, events travel the links, and now
+// and then one flares in a severity colour, like an alert. Decoration only:
+// it stops when the page is hidden, and holds still for reduced motion.
+const loginNet = (() => {
+  const canvas = $("login-net"), ctx = canvas.getContext && canvas.getContext("2d");
+  let nodes = [], edges = [], packets = [], flares = [], raf = 0, w = 0, h = 0, colors = {}, last = 0, nextPacket = 0, nextFlare = 0, stale = true;
+  const still = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
+  function readColors() {
+    const cs = getComputedStyle(document.documentElement);
+    colors = { ink: cs.getPropertyValue("--ink").trim(), ink2: cs.getPropertyValue("--ink-2").trim(),
+      sev: ["--sev-3", "--sev-4", "--sev-5"].map((v) => cs.getPropertyValue(v).trim()) };
+  }
+  function build() {
+    const r = canvas.getBoundingClientRect(), dpr = Math.min(window.devicePixelRatio || 1, 2);
+    nodes = []; edges = []; packets = []; flares = [];
+    if (r.width < 20 || r.height < 20) return; // not on screen yet
+    stale = false;
+    w = r.width; h = r.height;
+    canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    // Clusters of hosts on a loose grid, so the web fills the panel, with a
+    // few strays; the corner behind the name is kept clear.
+    const m = Math.min(w, h), cols = w > 700 ? 3 : 2, rows = h > 600 ? 3 : 2;
+    const count = Math.max(50, Math.min(170, Math.round(w * h / 3600)));
+    const clear = (x, y) => x < Math.min(380, w * .6) && y > h - 170;
+    const centres = [];
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      if (Math.random() < .15 && centres.length) continue;
+      centres.push({ x: (c + .5 + (Math.random() - .5) * .7) / cols * w, y: (r + .45 + (Math.random() - .5) * .6) / rows * h * .92 });
+    }
+    nodes = [];
+    for (let i = 0, tries = 0; nodes.length < count && tries < count * 6; tries++, i++) {
+      let x, y;
+      if (i % 9 === 0) { x = Math.random() * w; y = Math.random() * h * .9; }
+      else {
+        const c = centres[i % centres.length], a = Math.random() * 6.283, d = Math.abs(Math.random() + Math.random() - 1) * m * .3;
+        x = c.x + Math.cos(a) * d * 1.3; y = c.y + Math.sin(a) * d;
+      }
+      if (x < 12 || y < 12 || x > w - 12 || y > h - 12 || clear(x, y)) continue;
+      nodes.push({ hx: x, hy: y, x, y, p: Math.random() * 6.28, s: .25 + Math.random() * .5, big: Math.random() < .08 });
+    }
+    edges = [];
+    const seen = new Set(), reach = (m * .2) ** 2;
+    nodes.forEach((n, i) => {
+      nodes.map((o, j) => [j, (o.hx - n.hx) ** 2 + (o.hy - n.hy) ** 2]).filter(([j]) => j !== i)
+        .sort((a, b) => a[1] - b[1]).slice(0, 4 + (i % 4))
+        .forEach(([j, d2], rank) => {
+          const k = i < j ? i + "-" + j : j + "-" + i;
+          if (!seen.has(k) && (d2 < reach || rank === 0)) { seen.add(k); edges.push([i, j]); }
+        });
+    });
+    packets = []; flares = [];
+    readColors();
+  }
+  function draw(t) {
+    ctx.clearRect(0, 0, w, h);
+    const moving = !still();
+    for (const n of nodes) {
+      n.x = n.hx + (moving ? Math.sin(t / 2600 * n.s + n.p) * 4 : 0);
+      n.y = n.hy + (moving ? Math.cos(t / 3100 * n.s + n.p) * 4 : 0);
+    }
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = colors.ink2;
+    ctx.globalAlpha = .28;
+    ctx.beginPath();
+    for (const [a, b] of edges) { ctx.moveTo(nodes[a].x, nodes[a].y); ctx.lineTo(nodes[b].x, nodes[b].y); }
+    ctx.stroke();
+    for (const n of nodes) {
+      ctx.globalAlpha = n.big ? .95 : .6;
+      ctx.fillStyle = n.big ? colors.ink : colors.ink2;
+      ctx.beginPath(); ctx.arc(n.x, n.y, n.big ? 3.2 : 2, 0, 6.283); ctx.fill();
+    }
+    for (const k of packets) {
+      const [a, b] = edges[k.e], f = k.f, x = nodes[a].x + (nodes[b].x - nodes[a].x) * f, y = nodes[a].y + (nodes[b].y - nodes[a].y) * f;
+      ctx.globalAlpha = Math.sin(f * Math.PI) * .9;
+      ctx.fillStyle = colors.ink;
+      ctx.beginPath(); ctx.arc(x, y, 1.8, 0, 6.283); ctx.fill();
+    }
+    for (const fl of flares) {
+      const n = nodes[fl.n], age = (t - fl.t) / 2400;
+      ctx.globalAlpha = (1 - age) * .9;
+      ctx.strokeStyle = ctx.fillStyle = fl.c;
+      ctx.beginPath(); ctx.arc(n.x, n.y, 3, 0, 6.283); ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.arc(n.x, n.y, 4 + age * 18, 0, 6.283); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+  function frame(t) {
+    raf = 0;
+    if ($("login").hidden || document.hidden || !edges.length) return;
+    const dt = last ? Math.min(t - last, 100) : 16;
+    last = t;
+    if (t > nextPacket) { packets.push({ e: Math.floor(Math.random() * edges.length), f: 0, v: .00035 + Math.random() * .0004 }); nextPacket = t + 140 + Math.random() * 260; }
+    if (t > nextFlare) { flares.push({ n: Math.floor(Math.random() * nodes.length), t, c: colors.sev[Math.floor(Math.random() * 3)] }); nextFlare = t + 3500 + Math.random() * 5000; }
+    for (const k of packets) k.f += k.v * dt;
+    packets = packets.filter((k) => k.f < 1);
+    flares = flares.filter((f) => t - f.t < 2400);
+    draw(t);
+    raf = requestAnimationFrame(frame);
+  }
+  function start() {
+    if (!ctx) return;
+    requestAnimationFrame(() => {
+      if (stale || Math.abs(canvas.getBoundingClientRect().width - w) > 1) build();
+      if (!edges.length) return;
+      readColors();
+      if (still()) { draw(0); return; }
+      if (!raf) { last = 0; raf = requestAnimationFrame(frame); }
+    });
+  }
+  if (ctx) {
+    new ResizeObserver(() => { stale = true; if (!$("login").hidden) start(); }).observe(canvas);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden && !$("login").hidden) start(); });
+    matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => { readColors(); if (still() && !$("login").hidden) draw(0); });
+  }
+  return { start, recolor: () => { if (ctx && nodes.length) { readColors(); if (still()) draw(0); } } };
+})();
 async function api(path, opts = {}) {
   if (opts.json !== undefined) {
     opts = { ...opts, body: JSON.stringify(opts.json), headers: { "Content-Type": "application/json", ...(opts.headers || {}) } };
