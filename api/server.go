@@ -29,6 +29,7 @@ import (
 	"siemlite/pkg/intel"
 	"siemlite/pkg/ocsf"
 	"siemlite/pkg/parser"
+	"siemlite/pkg/retention"
 	"siemlite/pkg/search"
 	"siemlite/pkg/sources"
 	"siemlite/pkg/storage"
@@ -66,6 +67,8 @@ type Deps struct {
 	Entra *entra.Service
 	// Proxies are the reverse proxies whose X-Forwarded-For is believed (optional).
 	Proxies *Proxies
+	// Retention deletes old events; the System page sets its period (optional).
+	Retention *retention.Cleaner
 	// LocalAddr is the local port's address, e.g. localhost:8444 (optional).
 	// Requests on it count as coming from the server itself (see signin.go).
 	LocalAddr string
@@ -175,6 +178,8 @@ func (s *Server) Handler() http.Handler {
 	admin("GET /api/v1/system/tls", s.handleGetTLS)
 	admin("PUT /api/v1/system/tls", s.handleSaveTLS)
 	admin("POST /api/v1/system/tls/check", s.handleCheckTLS)
+	admin("GET /api/v1/system/retention", s.handleGetRetention)
+	admin("PUT /api/v1/system/retention", s.handleSaveRetention)
 	admin("GET /api/v1/system/signin", s.handleGetSignin)
 	admin("PUT /api/v1/system/signin", s.handleSaveSignin)
 	admin("GET /api/v1/system/update", s.handleUpdateStatus)

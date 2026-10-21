@@ -40,6 +40,9 @@ type Config struct {
 	// the retention period) is how old an event may be, MaxAhead (default a
 	// day) how far in the future.
 	MaxAge, MaxAhead time.Duration
+	// OnLateBatch is told about each burst of LateBurst or more late events
+	// from one source (see late.go), once it is over. Optional.
+	OnLateBatch func(LateBatch)
 }
 
 func (c *Config) applyDefaults() {
@@ -88,12 +91,60 @@ type Worker struct {
 	wg     sync.WaitGroup
 
 	accepted, written, dropped, batches atomic.Uint64
+
+	maxAge atomic.Int64 // nanoseconds; Config.MaxAge, changed by SetMaxAge
+	late   lateTracker
+	stop   chan struct{}
+}
+
+// SetMaxAge changes how old an event may be (the retention period), at once.
+func (w *Worker) SetMaxAge(d time.Duration) { w.maxAge.Store(int64(d)) }
+
+// lateNote counts a late event and reports the bursts that have ended.
+func (w *Worker) lateNote(source int64, t time.Time, stored bool, now time.Time) {
+	if w.cfg.OnLateBatch == nil {
+		return
+	}
+	for _, b := range w.late.note(source, t, stored, now) {
+		go w.cfg.OnLateBatch(b)
+	}
+}
+
+// EndLateBursts reports every burst of late events now, as if each had
+// ended (for tests, which can't wait for a burst to go quiet).
+func (w *Worker) EndLateBursts() {
+	if w.cfg.OnLateBatch == nil {
+		return
+	}
+	for _, b := range w.late.sweep(time.Now().Add(lateMax + time.Hour)) {
+		w.cfg.OnLateBatch(b)
+	}
+}
+
+// lateSweeper reports bursts that ended while no late events came in.
+func (w *Worker) lateSweeper() {
+	t := time.NewTicker(15 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-w.stop:
+			return
+		case now := <-t.C:
+			for _, b := range w.late.sweep(now) {
+				go w.cfg.OnLateBatch(b)
+			}
+		}
+	}
 }
 
 // New starts the worker pool.
 func New(sink Sink, cfg Config) *Worker {
 	cfg.applyDefaults()
-	w := &Worker{cfg: cfg, sink: sink, ch: make(chan storage.Record, cfg.QueueSize)}
+	w := &Worker{cfg: cfg, sink: sink, ch: make(chan storage.Record, cfg.QueueSize), stop: make(chan struct{})}
+	w.maxAge.Store(int64(cfg.MaxAge))
+	if cfg.OnLateBatch != nil {
+		go w.lateSweeper()
+	}
 	w.wg.Add(cfg.Workers)
 	for range cfg.Workers {
 		go w.run()
@@ -121,11 +172,15 @@ func (w *Worker) SubmitWith(ctx context.Context, ev *ocsf.Event, opts SubmitOpti
 		return err
 	}
 	now := time.Now()
+	maxAge := time.Duration(w.maxAge.Load())
 	switch t := time.UnixMilli(ev.Time); {
 	case t.After(now.Add(w.cfg.MaxAhead)):
 		return &ocsf.ValidationError{Field: "time", Reason: fmt.Sprintf("is more than %s in the future (check the sender's clock)", w.cfg.MaxAhead)}
-	case w.cfg.MaxAge > 0 && t.Before(now.Add(-w.cfg.MaxAge)):
-		return &ocsf.ValidationError{Field: "time", Reason: fmt.Sprintf("is older than the %d days events are kept", int(w.cfg.MaxAge.Hours()/24))}
+	case maxAge > 0 && t.Before(now.Add(-maxAge)):
+		w.lateNote(opts.SourceID, t, false, now)
+		return &ocsf.ValidationError{Field: "time", Reason: fmt.Sprintf("is older than the %d days events are kept", int(maxAge.Hours()/24))}
+	case t.Before(now.Add(-LateAfter)):
+		w.lateNote(opts.SourceID, t, true, now)
 	}
 	rec := storage.Record{
 		Timestamp:   ev.Time,
@@ -187,6 +242,7 @@ func (w *Worker) Close() {
 	if !w.closed {
 		w.closed = true
 		close(w.ch)
+		close(w.stop)
 	}
 	w.mu.Unlock()
 	w.wg.Wait()

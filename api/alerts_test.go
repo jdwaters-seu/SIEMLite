@@ -159,7 +159,7 @@ func TestRuleValidation(t *testing.T) {
 			builtin = ru.ID
 		}
 	}
-	if len(rules) != 5 || builtin == 0 {
+	if len(rules) != 6 || builtin == 0 { // five built-in rules and this one
 		t.Fatalf("rules = %d (built-in %d)", len(rules), builtin)
 	}
 	if got := e.call(root, "DELETE", fmt.Sprintf("/api/v1/rules/%d", builtin), nil, nil, nil); got != 400 {

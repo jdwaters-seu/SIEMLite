@@ -6,8 +6,10 @@ package audit
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"time"
 
 	"siemlite/pkg/ingest"
@@ -104,4 +106,18 @@ func (l *Logger) Record(ctx context.Context, e Entry) {
 	if err := l.submit.SubmitWith(ctx, Event(e, l.host, time.Now()), ingest.SubmitOptions{SourceID: id, Fields: fields}); err != nil {
 		l.log.Error("audit: event not stored", "action", e.Action, "err", err)
 	}
+}
+
+// LateBatch records a mass ingestion of late events from one source (see
+// pkg/ingest) as a High event; the built-in rule "Mass ingestion of late
+// logs" turns it into an alert. The events themselves keep their severity.
+func (l *Logger) LateBatch(ctx context.Context, source string, b ingest.LateBatch, retentionDays int) {
+	msg := fmt.Sprintf("Mass ingestion of late logs: %d events more than %d days old from %s, dated %s to %s",
+		b.Stored+b.Refused, int(ingest.LateAfter.Hours()/24), source, b.Oldest.UTC().Format("2006-01-02"), b.Newest.UTC().Format("2006-01-02"))
+	if b.Refused > 0 {
+		msg += fmt.Sprintf(" (%d stored, %d refused as older than the %d days events are kept)", b.Stored, b.Refused, retentionDays)
+	}
+	l.Record(ctx, Entry{Action: "ingest.late", Actor: source, Severity: ocsf.SeverityHigh, Message: msg + ".",
+		Fields: map[string]string{"source": source, "stored": strconv.Itoa(b.Stored), "refused": strconv.Itoa(b.Refused),
+			"oldest": b.Oldest.UTC().Format(time.RFC3339), "newest": b.Newest.UTC().Format(time.RFC3339)}})
 }

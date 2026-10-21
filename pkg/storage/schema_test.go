@@ -221,8 +221,8 @@ func TestUpgradeToV9KeepsUserSources(t *testing.T) {
 	}
 	var n int
 	db.Read.QueryRow(`SELECT COUNT(*) FROM alert_rules WHERE builtin = 1`).Scan(&n)
-	if n != 4 {
-		t.Errorf("built-in rules = %d, want 4", n)
+	if n != 5 {
+		t.Errorf("built-in rules = %d, want 5", n)
 	}
 	// Foreign keys are back on for normal use.
 	var fk int

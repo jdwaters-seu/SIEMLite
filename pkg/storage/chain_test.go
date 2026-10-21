@@ -122,7 +122,7 @@ func TestUpgradeChainFromEveryVersion(t *testing.T) {
 				check(`SELECT role FROM users WHERE username = 'ann'`, "standard")
 				check(`SELECT COUNT(*) FROM indicators`, 1)
 				check(`SELECT group_concat(kind, ' ') FROM (SELECT kind FROM sources WHERE kind <> 'token' ORDER BY kind)`, "internal syslog upload")
-				check(`SELECT COUNT(*) FROM alert_rules WHERE builtin = 1`, 4)
+				check(`SELECT COUNT(*) FROM alert_rules WHERE builtin = 1`, 5) // with "Mass ingestion of late logs" (v15)
 				check(`SELECT kind || ' ' || COALESCE(revoked_at, 'live') FROM sources WHERE id = 7`, "token live")
 				if k >= 6 {
 					check(`SELECT limited FROM users WHERE id = 2`, 1)

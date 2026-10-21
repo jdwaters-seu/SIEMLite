@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -18,7 +20,7 @@ type Store interface {
 
 // Config tunes the cleaner. Zero values select defaults.
 type Config struct {
-	RetentionDays int           // default 30
+	RetentionDays int           // default DefaultDays
 	Interval      time.Duration // default 24h
 	RawInterval   time.Duration // how often original lines are removed (default 1h)
 	BatchSize     int           // rows deleted per transaction (default 5000)
@@ -27,16 +29,37 @@ type Config struct {
 	Now           func() time.Time // for tests; default time.Now
 }
 
+// DefaultDays is how long events are kept unless set otherwise: two years.
+const DefaultDays = 730
+
+// The retention period chosen on the System page is kept in this setting; it
+// takes the place of -retention-days.
+const SettingKey = "retention_days"
+
+// Allowed retention periods, in days.
+const (
+	MinDays = 1
+	MaxDays = 3650
+)
+
 // Cleaner periodically enforces the retention window.
 type Cleaner struct {
 	cfg   Config
 	store Store
+	days  atomic.Int64
+	run   sync.Mutex // one clean at a time
 }
+
+// Days is the retention period now.
+func (c *Cleaner) Days() int { return int(c.days.Load()) }
+
+// SetDays changes the retention period; the next clean uses it.
+func (c *Cleaner) SetDays(n int) { c.days.Store(int64(n)) }
 
 // New returns a Cleaner.
 func New(store Store, cfg Config) *Cleaner {
 	if cfg.RetentionDays <= 0 {
-		cfg.RetentionDays = 30
+		cfg.RetentionDays = DefaultDays
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = 24 * time.Hour
@@ -56,7 +79,9 @@ func New(store Store, cfg Config) *Cleaner {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
-	return &Cleaner{cfg: cfg, store: store}
+	c := &Cleaner{cfg: cfg, store: store}
+	c.days.Store(int64(cfg.RetentionDays))
+	return c
 }
 
 // Run cleans immediately, then every Interval, until ctx is cancelled.
@@ -84,7 +109,9 @@ func (c *Cleaner) Run(ctx context.Context) {
 // small enough not to starve the ingest writer, running an incremental
 // vacuum after each batch. It returns the number of events deleted.
 func (c *Cleaner) RunOnce(ctx context.Context) (int64, error) {
-	cutoff := c.cfg.Now().AddDate(0, 0, -c.cfg.RetentionDays).UnixMilli()
+	c.run.Lock()
+	defer c.run.Unlock()
+	cutoff := c.cfg.Now().AddDate(0, 0, -c.Days()).UnixMilli()
 
 	var total int64
 	for {

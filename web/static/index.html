@@ -1094,6 +1094,21 @@
         </div>
         <p class="notice" id="tls-msg" role="status" hidden></p>
       </form>
+      <form class="panel sched" id="ret-form" autocomplete="off">
+        <div><h2>Keep events</h2>
+          <p class="hint" id="ret-status">Checking…</p></div>
+        <div class="sched-fields">
+          <div class="seg" role="group" aria-label="Keep events for">
+            <button type="button" data-ret="30" aria-pressed="false">30 days</button>
+            <button type="button" data-ret="90" aria-pressed="false">90 days</button>
+            <button type="button" data-ret="365" aria-pressed="false">1 year</button>
+            <button type="button" data-ret="730" aria-pressed="false">2 years</button>
+          </div>
+          <label class="field-label">Days <input class="input" id="ret-days" type="number" min="1" max="3650" required></label>
+          <button class="btn btn-primary" type="submit" id="ret-save">Save</button>
+        </div>
+        <p class="notice" id="ret-msg" role="status" hidden></p>
+      </form>
       <form class="panel sched" id="sched-form">
         <div><h2>Automatic backups</h2><p class="hint">Older automatic backups are removed as new ones are made. Backups you make,
           upload, or that are made before a restore are only removed by you.</p></div>
@@ -2985,6 +3000,7 @@ async function openSystem() {
   } catch (err) { notice($("system-msg"), err.message); }
   loadUpdate(false);
   loadTLS();
+  loadRetention();
   notice($("tls-msg"), "");
   await loadBackups(true);
 }
@@ -3489,6 +3505,40 @@ function tlsFill(v) {
   st.textContent = text;
   if (v.obtaining || (!le && !v.last_error)) tlsPoll = setTimeout(loadTLS, 2000); // follow it until it's done
 }
+// --- Keep events (retention) ---
+let retView = null;
+const daysText = (n) => n % 365 === 0 ? `${n / 365} ${n === 365 ? "year" : "years"}` : `${n} ${n === 1 ? "day" : "days"}`;
+function retPressed() {
+  for (const b of document.querySelectorAll("[data-ret]")) b.setAttribute("aria-pressed", String(b.dataset.ret === $("ret-days").value));
+}
+async function loadRetention() {
+  try {
+    retView = await apiJSON("/api/v1/system/retention");
+    $("ret-days").value = retView.days;
+    $("ret-days").min = retView.min; $("ret-days").max = retView.max;
+    retPressed();
+    $("ret-status").textContent = `Events are kept ${daysText(retView.days)}, each under its own date, then deleted (checked daily). ` +
+      `An event dated before that is refused when it arrives. When ${retView.late_burst} or more events more than ${retView.late_after_days} days old ` +
+      `arrive from one source at once, SIEMLite raises a High alert, "Mass ingestion of late logs"; the events keep their own severity.` +
+      (retView.saved ? "" : ` Set by -retention-days (SIEMLITE_RETENTION_DAYS) until you save here; the default is ${daysText(retView.default)}.`);
+  } catch (err) { $("ret-status").textContent = err.message; }
+}
+for (const b of document.querySelectorAll("[data-ret]")) b.onclick = () => { $("ret-days").value = b.dataset.ret; retPressed(); };
+$("ret-days").oninput = retPressed;
+$("ret-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const days = Number($("ret-days").value);
+  if (retView && days < retView.days &&
+      !(await confirmAction(`Keep events only ${daysText(days)}?`, `Events older than ${daysText(days)} are deleted now, and can't be recovered except from a backup.`, "Delete older events"))) return;
+  $("ret-save").disabled = true;
+  try {
+    const v = await apiJSON("/api/v1/system/retention", { method: "PUT", json: { days } });
+    notice($("ret-msg"), v.cleaning ? `Saved. Events older than ${daysText(v.days)} are being deleted.` : `Saved. Events are kept ${daysText(v.days)}.`, true);
+    await loadRetention();
+  } catch (err) { notice($("ret-msg"), err.message); }
+  $("ret-save").disabled = false;
+};
+
 async function loadTLS() {
   try { tlsFill(await apiJSON("/api/v1/system/tls")); }
   catch (err) { $("tls-status").textContent = err.message; }
