@@ -537,9 +537,11 @@ type sessionInfo struct {
 	// AuthProvider is how the account signs in: "local" (a password) or
 	// "entra" (Microsoft).
 	AuthProvider string `json:"auth_provider"`
+	// DisplayName is the name to show (a Microsoft account's display name), or empty.
+	DisplayName string `json:"display_name,omitempty"`
 }
 
-func (s *Server) session(username, role string, limited bool, sources []int64, provider string) sessionInfo {
+func (s *Server) session(username, role string, limited bool, sources []int64, provider, displayName string) sessionInfo {
 	if sources == nil || role == auth.RoleAdmin {
 		sources = []int64{}
 	}
@@ -547,7 +549,7 @@ func (s *Server) session(username, role string, limited bool, sources []int64, p
 		provider = storage.ProviderLocal
 	}
 	return sessionInfo{Username: username, Role: role, Limited: limited && role != auth.RoleAdmin, Sources: sources, AI: s.deps.AI.Status(),
-		Version: s.deps.Version, AuthProvider: provider}
+		Version: s.deps.Version, AuthProvider: provider, DisplayName: displayName}
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -598,7 +600,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if full, err := s.deps.Repo.GetUser(r.Context(), user.ID); err == nil {
 		limited, sources = full.Limited, full.Sources
 	}
-	writeJSON(w, http.StatusOK, s.session(user.Username, user.Role, limited, sources, user.AuthProvider))
+	writeJSON(w, http.StatusOK, s.session(user.Username, user.Role, limited, sources, user.AuthProvider, user.DisplayName))
 }
 
 func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
@@ -703,10 +705,22 @@ func (s *Server) audit(r *http.Request, e audit.Entry) {
 	if s.deps.Audit == nil {
 		return
 	}
-	if e.Actor == "" {
-		if p := auth.FromContext(r.Context()); p != nil {
-			e.Actor = p.Name
+	p := auth.FromContext(r.Context())
+	if p != nil && e.Actor == "" {
+		e.Actor = p.Name
+	}
+	// Messages start with who did it; show their display name too. On
+	// public routes (sign-in, sign-out) nobody is attached to the request,
+	// so the account is looked up.
+	if e.Actor != "" && strings.HasPrefix(e.Message, e.Actor+" ") {
+		who := p
+		if who == nil || who.Name != e.Actor {
+			who = &auth.Principal{Name: e.Actor}
+			if u, _, err := s.deps.Repo.GetUserForLogin(r.Context(), e.Actor); err == nil {
+				who.DisplayName = u.DisplayName
+			}
 		}
+		e.Message = who.Label() + e.Message[len(e.Actor):]
 	}
 	if e.IP == "" {
 		e.IP = s.clientIP(r)
@@ -721,7 +735,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "not signed in")
 		return
 	}
-	writeJSON(w, http.StatusOK, s.session(p.Name, p.Role, p.Limited, p.Sources, p.AuthProvider))
+	writeJSON(w, http.StatusOK, s.session(p.Name, p.Role, p.Limited, p.Sources, p.AuthProvider, p.DisplayName))
 }
 
 // handleChangeOwnPassword lets a signed-in user change their own password.

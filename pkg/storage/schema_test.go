@@ -149,6 +149,7 @@ func TestUpgradeToV7(t *testing.T) {
 		`ALTER TABLE users DROP COLUMN auth_provider`,
 		`ALTER TABLE users DROP COLUMN external_id`,
 		`ALTER TABLE users DROP COLUMN disabled`,
+		`ALTER TABLE users DROP COLUMN display_name`,
 		`PRAGMA user_version = 6`,
 	} {
 		if _, err := db.Write.Exec(stmt); err != nil {
@@ -196,6 +197,7 @@ func TestUpgradeToV9KeepsUserSources(t *testing.T) {
 		`ALTER TABLE users DROP COLUMN auth_provider`,
 		`ALTER TABLE users DROP COLUMN external_id`,
 		`ALTER TABLE users DROP COLUMN disabled`,
+		`ALTER TABLE users DROP COLUMN display_name`,
 		`PRAGMA user_version = 8`,
 	} {
 		if _, err := db.Write.Exec(stmt); err != nil {
@@ -227,5 +229,38 @@ func TestUpgradeToV9KeepsUserSources(t *testing.T) {
 	db.Write.QueryRow(`PRAGMA foreign_keys`).Scan(&fk)
 	if fk != 1 {
 		t.Error("foreign keys left off after migrating")
+	}
+}
+
+// v14 adds display names; existing accounts keep their usernames and show
+// them until a name is set.
+func TestUpgradeToV14(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v13.db")
+	db, err := Open(ctx, Options{Path: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	repo := NewRepository(db)
+	id, _ := repo.CreateExternalUser(ctx, "entra", "oid-1", "justin@fisni.com", "admin", 1)
+	for _, stmt := range []string{`ALTER TABLE users DROP COLUMN display_name`, `PRAGMA user_version = 13`} {
+		if _, err := db.Write.Exec(stmt); err != nil {
+			t.Fatal(stmt, err)
+		}
+	}
+	db.Close()
+	if db, err = Open(ctx, Options{Path: path}); err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repo = NewRepository(db)
+	if u, err := repo.GetUser(ctx, id); err != nil || u.Username != "justin@fisni.com" || u.DisplayName != "" {
+		t.Fatalf("after upgrade = %+v %v", u, err)
+	}
+	if err := repo.SetDisplayName(ctx, id, "Justin Waters"); err != nil {
+		t.Fatal(err)
+	}
+	if u, _ := repo.GetUser(ctx, id); u.DisplayName != "Justin Waters" {
+		t.Errorf("display name = %q", u.DisplayName)
 	}
 }

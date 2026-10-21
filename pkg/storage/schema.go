@@ -8,7 +8,7 @@ import (
 )
 
 // schemaVersion is stored in PRAGMA user_version.
-const schemaVersion = 13
+const schemaVersion = 14
 
 // schemaStatements is the idempotent DDL applied on startup.
 //
@@ -277,6 +277,11 @@ var upgrades = map[int][]string{
 		`ALTER TABLE users ADD COLUMN external_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE users ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_external ON users(auth_provider, external_id) WHERE external_id != ''`,
+	},
+	// v14: the name to show for an account, such as a Microsoft account's
+	// display name. The username stays the unique name that identifies it.
+	13: {
+		`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`,
 	},
 }
 

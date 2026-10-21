@@ -588,6 +588,14 @@ func (s *Service) CompleteLogin(ctx context.Context, code, state, flowCookie str
 			return nil, failed("read the account: %v", err)
 		}
 	}
+	// The name to show follows Microsoft's display name.
+	if name := CleanName(c.Name); name != "" && name != u.DisplayName {
+		if err := s.repo.SetDisplayName(ctx, u.ID, name); err != nil {
+			s.log.Warn("couldn't update a single sign-on user's name", "user", u.Username, "err", err)
+		} else {
+			u.DisplayName = name
+		}
+	}
 	return u, nil
 }
 
@@ -633,14 +641,14 @@ func (s *Service) Sync(ctx context.Context) (SyncStatus, error) {
 	if err != nil {
 		return finish(err)
 	}
-	admins := map[string]bool{}
+	admins := map[string]member{}
 	if st.AdminGroupID != "" {
 		if admins, err = s.members(ctx, tok, st.AdminGroupID); err != nil {
 			return finish(err)
 		}
 	}
-	for _, ok := range access {
-		if ok {
+	for _, m := range access {
+		if m.Enabled {
 			stat.Members++
 		}
 	}
@@ -650,7 +658,13 @@ func (s *Service) Sync(ctx context.Context) (SyncStatus, error) {
 	}
 	stat.Accounts = len(users)
 	for _, u := range users {
-		allowed := access[u.ExternalID]
+		m, in := access[u.ExternalID]
+		allowed := in && m.Enabled
+		if allowed && m.Name != "" && m.Name != u.DisplayName { // renamed in Entra
+			if err := s.repo.SetDisplayName(ctx, u.ID, m.Name); err != nil {
+				s.log.Warn("couldn't update a single sign-on user's name", "user", u.Username, "err", err)
+			}
+		}
 		switch {
 		case !allowed && !u.Disabled:
 			if err := s.repo.SetUserDisabled(ctx, u.ID, true); err != nil {
@@ -674,7 +688,7 @@ func (s *Service) Sync(ctx context.Context) (SyncStatus, error) {
 		}
 		if allowed && st.AdminGroupID != "" {
 			want := "standard"
-			if admins[u.ExternalID] {
+			if admins[u.ExternalID].Enabled {
 				want = "admin"
 			}
 			if u.Role != want {

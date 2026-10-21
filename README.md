@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.20` in `.env` to use it, or leave it out to build from the
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.21` in `.env` to use it, or leave it out to build from the
 checkout. Either way, start and update with `./update.sh`:
 
 ```sh
@@ -259,7 +259,7 @@ the raw text.
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
 | `GET`/`PUT /api/v1/integrations/ai`, `POST /api/v1/integrations/ai/test`, `GET /api/v1/integrations/ai/cloud-models` | admin | The [AI Parsers](#ai-parsers) settings (`{"provider": "local"/"openrouter", "ollama_url", "local_model", "cloud_model", "send_addresses", "openrouter_key"}`; the key is write-only, leaving it out keeps the saved one and `""` removes it), with this server's hardware, the recommended model and the download's progress; a connection test (the same fields); and OpenRouter's models that can answer in a JSON shape. |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
-| `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`). A password sign-in refused by a [sign-in restriction](#sign-in-restrictions) gets `403`. |
+| `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`, and `display_name` for a Microsoft account). A password sign-in refused by a [sign-in restriction](#sign-in-restrictions) gets `403`. |
 | `GET`/`PUT /api/v1/system/signin` | admin | The [sign-in restrictions](#sign-in-restrictions): `{"admin_local_only", "entra_only"}` (send either). The answer also says what is enforced now, the local port, and whether the request came in on it. Turning either on is refused without a local port; Microsoft-only also needs sign-in with Microsoft on and a local Admin account named `admin`. |
 | `POST /api/v1/me/password` | any signed-in user | Change your own password: `{"current_password", "new_password"}`. After 10 wrong current passwords in 15 minutes the account can't try again for the rest of the window (a limit of its own, separate from signing in); your other sessions end, this one continues. Refused for Microsoft accounts. |
 | `GET /health` | public | Up/down only. When signed in it also returns event count, database size, ingest queue state, indicator count and syslog counters. |
@@ -548,6 +548,9 @@ Enter them on the card, choose **Test connection** (it shows the group names and
   kept, the check says so, and it can't sign in again while it is outside the group, so create another admin.
 - **Accounts are matched by Microsoft's object ID**, not by name. A Microsoft user name that matches an existing local account is
   refused, never linked to it, so nobody can take over a local account by having the same name.
+- **The display name is shown** (Justin Waters) in the sidebar, on the Account and Users pages and in audit messages, with
+  the account's email (its username, which stays unique) beside it where it identifies the account. It is taken from
+  Microsoft at each sign-in and at every membership check, so a rename in Entra shows up within five minutes.
 - **Password sign-in stays** for local accounts unless you choose **Only allow sign-in with Microsoft** (see
   [Sign-in restrictions](#sign-in-restrictions)), so keep a local admin in case Microsoft is unreachable. Accounts that sign in with
   Microsoft have no password. Turning the integration off, or removing it, stops new Microsoft sign-ins and signs out everyone who signed in
