@@ -448,3 +448,65 @@ func TestTurningOffDuringASignInLeavesNoSession(t *testing.T) {
 		t.Errorf("%d Microsoft sessions exist after it was turned off (%v)", n, err)
 	}
 }
+
+// TestMembershipCheckAtSignIn: the access group is checked by asking Graph
+// for the group's members filtered to the person, and, where Graph won't
+// filter, by reading the whole member list; someone outside the group is
+// refused either way.
+func TestMembershipCheckAtSignIn(t *testing.T) {
+	for _, noFilter := range []bool{false, true} {
+		e := newEnv(t)
+		e.user("root", auth.RoleAdmin)
+		root := e.client()
+		e.login(root, "root", password)
+		e.ms.Set(entratest.AccessGroup, annOID, true)
+		if got := e.call(root, "PUT", "/api/v1/integrations/entra", entraForm(e), nil, nil); got != 200 {
+			t.Fatalf("save = %d", got)
+		}
+		e.ms.NoFilter = noFilter
+		e.ms.Filtered, e.ms.Listed = 0, 0
+
+		br := e.browser()
+		authURL, state := e.startSSO(br)
+		e.ms.Expect(authURL, annOID, "ann@example.com")
+		e.get(br, "/api/v1/auth/entra/callback?code="+entratest.Code+"&state="+state)
+		if got := e.call(br, "GET", "/api/v1/me", nil, nil, nil); got != 200 {
+			t.Errorf("noFilter=%v: a member couldn't sign in (%d)", noFilter, got)
+		}
+		if !noFilter && (e.ms.Filtered == 0 || e.ms.Listed != 0) {
+			t.Errorf("the filtered lookup wasn't used: filtered %d, listed %d", e.ms.Filtered, e.ms.Listed)
+		}
+		if noFilter && e.ms.Listed == 0 {
+			t.Error("no fallback to the member list")
+		}
+
+		out := e.browser()
+		authURL, state = e.startSSO(out)
+		e.ms.Expect(authURL, bobOID, "bob@example.com")
+		resp := e.get(out, "/api/v1/auth/entra/callback?code="+entratest.Code+"&state="+state)
+		if loc := resp.Header.Get("Location"); !strings.Contains(loc, "sso_error=not_in_group") {
+			t.Errorf("noFilter=%v: someone outside the group = %q", noFilter, loc)
+		}
+	}
+}
+
+// TestNewMemberNotYetInTheFilteredList: Graph's filtered lists can lag; the
+// full list decides before anyone is refused.
+func TestNewMemberNotYetInTheFilteredList(t *testing.T) {
+	e := newEnv(t)
+	e.user("root", auth.RoleAdmin)
+	root := e.client()
+	e.login(root, "root", password)
+	e.ms.Set(entratest.AccessGroup, annOID, true)
+	if got := e.call(root, "PUT", "/api/v1/integrations/entra", entraForm(e), nil, nil); got != 200 {
+		t.Fatalf("save = %d", got)
+	}
+	e.ms.Lag = annOID // the filtered lookup doesn't know about ann yet
+	br := e.browser()
+	authURL, state := e.startSSO(br)
+	e.ms.Expect(authURL, annOID, "ann@example.com")
+	e.get(br, "/api/v1/auth/entra/callback?code="+entratest.Code+"&state="+state)
+	if got := e.call(br, "GET", "/api/v1/me", nil, nil, nil); got != 200 || e.ms.Listed == 0 {
+		t.Errorf("a new member was refused (%d, listed %d)", got, e.ms.Listed)
+	}
+}

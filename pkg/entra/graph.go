@@ -120,6 +120,11 @@ func (s *Service) tokenRequest(ctx context.Context, cfg Config, form url.Values,
 // graph calls Microsoft Graph. path is relative to the Graph base, or a full
 // URL from an @odata.nextLink (checked to be on Graph).
 func (s *Service) graph(ctx context.Context, token, method, path string, in, out any) error {
+	return s.graphWith(ctx, token, method, path, nil, in, out)
+}
+
+// graphWith is graph with extra request headers.
+func (s *Service) graphWith(ctx context.Context, token, method, path string, headers map[string]string, in, out any) error {
 	full := s.graphURL() + path
 	if strings.HasPrefix(path, "http") {
 		if !strings.HasPrefix(path, s.graphURL()+"/") {
@@ -138,6 +143,9 @@ func (s *Service) graph(ctx context.Context, token, method, path string, in, out
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/json")
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
 	if in != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
@@ -164,20 +172,45 @@ func (s *Service) graph(ctx context.Context, token, method, path string, in, out
 }
 
 // isMember reports whether a person is in a group, directly or through a
-// nested group.
+// nested group: the group's members (as the background check reads them),
+// filtered to this person, so it needs no permission beyond
+// GroupMember.Read.All. When that doesn't find them, or Graph won't filter,
+// the whole list is read before saying no.
+//
+// (Not /groups/{id}/checkMemberObjects: that asks which of the given objects
+// the group itself belongs to, and Graph refuses a person's ID there.)
 func (s *Service) isMember(ctx context.Context, token, groupID, objectID string) (bool, error) {
-	var out struct {
-		Value []string `json:"value"`
+	if !isGUID(objectID) {
+		return false, fmt.Errorf("the account's object ID %q isn't a GUID", objectID)
 	}
-	if err := s.graph(ctx, token, http.MethodPost, "/groups/"+groupID+"/checkMemberObjects", map[string][]string{"ids": {objectID}}, &out); err != nil {
+	oid := strings.ToLower(objectID)
+	path := "/groups/" + groupID + "/transitiveMembers/microsoft.graph.user?$count=true&$select=id&$filter=" +
+		url.QueryEscape("id eq '"+oid+"'")
+	var out struct {
+		Value []struct {
+			ID string `json:"id"`
+		} `json:"value"`
+	}
+	err := s.graphWith(ctx, token, http.MethodGet, path, map[string]string{"ConsistencyLevel": "eventual"}, nil, &out)
+	var ge *graphError
+	if err != nil && !(errors.As(err, &ge) && ge.Status == http.StatusBadRequest) {
 		return false, err
 	}
-	for _, id := range out.Value {
-		if strings.EqualFold(id, objectID) {
-			return true, nil
+	if err == nil {
+		for _, m := range out.Value {
+			if strings.EqualFold(m.ID, oid) {
+				return true, nil
+			}
 		}
 	}
-	return false, nil
+	// Not found, or Graph won't filter. Filtered lists can lag behind a
+	// change by a few minutes, so a refusal always comes from the full list.
+	all, err := s.members(ctx, token, groupID)
+	if err != nil {
+		return false, err
+	}
+	_, ok := all[oid]
+	return ok, nil
 }
 
 // groupName returns a group's display name.
