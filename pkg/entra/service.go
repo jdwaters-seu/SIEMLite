@@ -589,7 +589,12 @@ func (s *Service) CompleteLogin(ctx context.Context, code, state, flowCookie str
 		}
 	}
 	// The name to show follows Microsoft's display name.
-	if name := s.showableName(ctx, u, c.Name); name != u.DisplayName {
+	all, err := s.repo.ListUsers(ctx)
+	if err != nil {
+		s.log.Warn("couldn't check a single sign-on user's name", "user", u.Username, "err", err)
+		return u, nil
+	}
+	if name := ShowableName(c.Name, *u, all); name != u.DisplayName {
 		if err := s.repo.SetDisplayName(ctx, u.ID, name); err != nil {
 			s.log.Warn("couldn't update a single sign-on user's name", "user", u.Username, "err", err)
 		} else {
@@ -597,28 +602,6 @@ func (s *Service) CompleteLogin(ctx context.Context, code, state, flowCookie str
 		}
 	}
 	return u, nil
-}
-
-// showableName is the display name to show for an account, or "" to show its
-// username. A display name is free text in Entra, which people can often
-// change themselves, so one that could pass for another account is not
-// shown: it can't hold an @ or parentheses (which would let it look like
-// "Name (account)"), or equal another account's username or display name.
-func (s *Service) showableName(ctx context.Context, u *storage.User, raw string) string {
-	name := CleanName(raw)
-	if name == "" || strings.ContainsAny(name, "@()") || strings.EqualFold(name, u.Username) {
-		return ""
-	}
-	taken, err := s.repo.NameTaken(ctx, name, u.ID)
-	if err != nil {
-		return u.DisplayName // keep what is shown now
-	}
-	if taken {
-		s.log.Warn("a Microsoft display name matches another account, so the account's username is shown instead",
-			"user", u.Username, "display_name", name)
-		return ""
-	}
-	return name
 }
 
 // --- Sync ---
@@ -679,12 +662,25 @@ func (s *Service) Sync(ctx context.Context) (SyncStatus, error) {
 		return finish(err)
 	}
 	stat.Accounts = len(users)
+	all, err := s.repo.ListUsers(ctx) // every account, for display-name clashes
+	if err != nil {
+		s.log.Warn("couldn't read the accounts to check display names", "err", err)
+		all = nil
+	}
 	for _, u := range users {
 		m, in := access[u.ExternalID]
 		allowed := in && m.Enabled
-		if name := s.showableName(ctx, &u, m.Name); allowed && m.Name != "" && name != u.DisplayName { // renamed in Entra
-			if err := s.repo.SetDisplayName(ctx, u.ID, name); err != nil {
-				s.log.Warn("couldn't update a single sign-on user's name", "user", u.Username, "err", err)
+		if allowed && m.Name != "" && all != nil { // the name follows Entra
+			if name := ShowableName(m.Name, u, all); name != u.DisplayName {
+				if err := s.repo.SetDisplayName(ctx, u.ID, name); err != nil {
+					s.log.Warn("couldn't update a single sign-on user's name", "user", u.Username, "err", err)
+				} else {
+					for i := range all {
+						if all[i].ID == u.ID {
+							all[i].DisplayName = name
+						}
+					}
+				}
 			}
 		}
 		switch {

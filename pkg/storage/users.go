@@ -385,19 +385,6 @@ func (r *Repository) CreateExternalUser(ctx context.Context, provider, externalI
 	return res.LastInsertId()
 }
 
-// NameTaken reports whether name (ignoring case) is another account's
-// username or display name, so it can't be shown for this one.
-func (r *Repository) NameTaken(ctx context.Context, name string, exceptID int64) (bool, error) {
-	var n int
-	err := r.db.Read.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM users WHERE id != ? AND (lower(username) = lower(?) OR lower(display_name) = lower(?))`,
-		exceptID, name, name).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("check name: %w", err)
-	}
-	return n > 0, nil
-}
-
 // SetDisplayName changes the name shown for an account.
 func (r *Repository) SetDisplayName(ctx context.Context, id int64, name string) error {
 	if _, err := r.db.Write.ExecContext(ctx, `UPDATE users SET display_name = ? WHERE id = ?`, name, id); err != nil {

@@ -522,7 +522,7 @@ func TestMicrosoftDisplayName(t *testing.T) {
 	root := e.client()
 	e.login(root, "root", password)
 	e.ms.Set(entratest.AccessGroup, annOID, true)
-	e.ms.Names = map[string]string{annOID: "Ann  Example‮"} // spaces and a direction override to tidy
+	e.ms.Names = map[string]string{annOID: "Ann  Example\u202e"} // spaces and a direction override to tidy
 	if got := e.call(root, "PUT", "/api/v1/integrations/entra", entraForm(e), nil, nil); got != 200 {
 		t.Fatalf("save = %d", got)
 	}

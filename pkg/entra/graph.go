@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"strings"
 	"time"
-	"unicode"
 )
 
 // Where Microsoft's public cloud is. The Service can point elsewhere for tests.
@@ -259,19 +258,4 @@ func (s *Service) members(ctx context.Context, token, groupID string) (map[strin
 		next = res.Next
 	}
 	return out, nil
-}
-
-// CleanName tidies a display name from Microsoft for showing: spaces
-// collapsed, control characters dropped, at most 128 characters.
-func CleanName(s string) string {
-	s = strings.Join(strings.Fields(strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) || r == '\u2028' || r == '\u2029' || (r >= '\u202a' && r <= '\u202e') || (r >= '\u2066' && r <= '\u2069') {
-			return ' '
-		}
-		return r
-	}, s)), " ")
-	if r := []rune(s); len(r) > 128 {
-		s = strings.TrimSpace(string(r[:128]))
-	}
-	return s
 }
