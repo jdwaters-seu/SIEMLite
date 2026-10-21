@@ -18,8 +18,10 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -107,7 +109,7 @@ func run() error {
 	certFile := flag.String("tls-cert", "", "TLS certificate PEM (default: <db dir>/siemlite.crt, self-signed if missing)")
 	keyFile := flag.String("tls-key", "", "TLS private key PEM (default: <db dir>/siemlite.key)")
 	tlsHosts := flag.String("tls-hosts", "", "extra comma-separated DNS names/IPs for a generated certificate")
-	retentionDays := flag.Int("retention-days", 30, "delete events older than this many days")
+	retentionDays := flag.Int("retention-days", retention.DefaultDays, "keep events this many days (default two years); the System page takes precedence once it is saved there")
 	geoCity := flag.String("geoip-city", "", "MaxMind/DB-IP City or Country .mmdb for IP geolocation")
 	geoASN := flag.String("geoip-asn", "", "MaxMind/DB-IP ASN .mmdb for IP autonomous system lookup")
 	var feeds feedFlag
@@ -194,11 +196,28 @@ func run() error {
 	}
 	enrichers = append(enrichers, intelSvc.Matcher)
 
+	// The retention period: the System page's, or else -retention-days.
+	days := *retentionDays
+	if v, err := repo.Setting(ctx, retention.SettingKey, ""); err == nil && v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= retention.MinDays && n <= retention.MaxDays {
+			days = n
+		}
+	}
+	var lateAudit atomic.Pointer[audit.Logger] // set once the audit log exists
+	var cleanerRef atomic.Pointer[retention.Cleaner]
+	retentionNow := func() int {
+		if c := cleanerRef.Load(); c != nil {
+			return c.Days()
+		}
+		return days
+	}
 	worker := ingest.New(repo, ingest.Config{BatchSize: 5000, FlushInterval: 500 * time.Millisecond, Enricher: enrichers,
-		MaxAge: time.Duration(max(*retentionDays, 0)) * 24 * time.Hour})
+		MaxAge:      time.Duration(max(days, 0)) * 24 * time.Hour,
+		OnLateBatch: func(b ingest.LateBatch) { reportLateBatch(repo, lateAudit.Load(), b, retentionNow()) }})
 	engine := search.NewEngine(repo)
 
-	cleaner := retention.New(repo, retention.Config{RetentionDays: *retentionDays, Interval: 24 * time.Hour})
+	cleaner := retention.New(repo, retention.Config{RetentionDays: days, Interval: 24 * time.Hour})
+	cleanerRef.Store(cleaner)
 	var wg sync.WaitGroup
 	bgCtx, cancelBackground := context.WithCancel(ctx)
 	defer cancelBackground() // early-return paths; the normal path cancels explicitly below
@@ -249,6 +268,7 @@ func run() error {
 	router := sources.New(repo)
 	authn := auth.New(repo, nil)
 	auditLog := audit.New(worker, router, nil)
+	lateAudit.Store(auditLog)
 	if restored != nil {
 		auditLog.Record(ctx, audit.Entry{Action: "backup.restored", Actor: "SIEMLite", Severity: 4,
 			Message: "SIEMLite restarted with the database restored from the backup " + restored.Backup +
@@ -377,7 +397,7 @@ func run() error {
 		updates.DataDir = dataDir
 	}
 	srv := api.NewServer(*addr, api.Deps{
-		DB: db, Repo: repo, Ingest: worker, Search: engine,
+		DB: db, Repo: repo, Ingest: worker, Search: engine, Retention: cleaner,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiSvc,
 		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc, aiSvc), Entra: entraSvc, Proxies: proxies, LocalAddr: *localAddr, Certs: certMgr, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
@@ -423,7 +443,7 @@ func run() error {
 		}
 	}()
 	slog.Info("SIEMLite listening (HTTPS only)", "version", version(), "url", "https://"+*addr, "db", *dbPath,
-		"retention_days", *retentionDays, "cert_sha256", fingerprint)
+		"retention_days", days, "cert_sha256", fingerprint)
 
 	var runErr error
 	select {
@@ -1057,4 +1077,15 @@ func readNewPassword() (string, error) {
 		return "", errors.New("passwords do not match")
 	}
 	return string(first), nil
+}
+
+// reportLateBatch records a mass ingestion of late events in the audit log.
+func reportLateBatch(repo *storage.Repository, log *audit.Logger, b ingest.LateBatch, retentionDays int) {
+	name := fmt.Sprintf("source %d", b.SourceID)
+	if src, err := repo.GetSource(context.Background(), b.SourceID); err == nil {
+		name = src.Name
+	}
+	slog.Warn("mass ingestion of late logs", "source", name, "stored", b.Stored, "refused", b.Refused,
+		"oldest", b.Oldest.UTC().Format(time.RFC3339), "newest", b.Newest.UTC().Format(time.RFC3339))
+	log.LateBatch(context.Background(), name, b, retentionDays)
 }

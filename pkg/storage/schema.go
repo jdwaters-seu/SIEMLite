@@ -8,7 +8,7 @@ import (
 )
 
 // schemaVersion is stored in PRAGMA user_version.
-const schemaVersion = 14
+const schemaVersion = 15
 
 // schemaStatements is the idempotent DDL applied on startup.
 //
@@ -282,6 +282,14 @@ var upgrades = map[int][]string{
 	// display name. The username stays the unique name that identifies it.
 	13: {
 		`ALTER TABLE users ADD COLUMN display_name TEXT NOT NULL DEFAULT ''`,
+	},
+	// v15: an alert when many events more than 30 days old arrive from one
+	// source at once (pkg/ingest records it in the audit log).
+	14: {
+		`INSERT OR IGNORE INTO alert_rules (name, description, severity, query, source_id, group_by, threshold, window_minutes, builtin, created_at, updated_at)
+			SELECT 'Mass ingestion of late logs', '50 or more events more than 30 days old arrived from one source at once: old logs loaded in bulk, a sender replaying them, or its clock set wrong.', 4, '"mass ingestion"', id, '', 1, 60, 1,
+				CAST(strftime('%s','now') AS INTEGER) * 1000, CAST(strftime('%s','now') AS INTEGER) * 1000
+			FROM sources WHERE kind = 'internal'`,
 	},
 }
 

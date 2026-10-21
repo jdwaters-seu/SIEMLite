@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.21` in `.env` to use it, or leave it out to build from the
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.22` in `.env` to use it, or leave it out to build from the
 checkout. Either way, start and update with `./update.sh`:
 
 ```sh
@@ -83,8 +83,8 @@ missed it, set a new one: `docker compose exec siemlite siemlite users passwd -u
   account and key. `docker compose down` keeps the volume; `docker compose down -v` deletes it.
 - Ports: HTTPS on 8443, syslog on 514 (UDP and TCP) and syslog over TLS on 6514. Change the host ports in `.env`.
   The local port, 8444, is published on `127.0.0.1` only, so only the server itself reaches it (see [Sign-in restrictions](#sign-in-restrictions)).
-- Settings: every server flag can be set in `.env` as `SIEMLITE_<FLAG>`, e.g. `SIEMLITE_RETENTION_DAYS=90`
-  for `-retention-days`. `.env.example` lists the useful ones.
+- Settings: every server flag can be set in `.env` as `SIEMLITE_<FLAG>`, e.g. `SIEMLITE_SYSLOG_ALLOW=10.0.0.0/8`
+  for `-syslog-allow`. `.env.example` lists the useful ones.
 - Set `SIEMLITE_TLS_HOSTS` to the names or IPs people use to reach the server **before the first start**: the
   certificate is generated once. To regenerate it later, delete it from the volume and restart (the image has no
   shell, so use a throwaway container; the volume is named after the checkout folder):
@@ -150,7 +150,7 @@ usually within seconds, then who issued it and until when. Or set it from the st
 - **Sources** (admins): add sources (each gets an access token and ready-to-paste code), see when each source last sent logs, choose how each source's lines are read (Automatic, None or a parser), add logs by hand, and enable, disable or delete a token (Manage).
 - **Parsers** (admins): build, upload, export and edit parsers.
 - **Integrations** (admins): connect SIEMLite to other services. Each integration is a card you set up and then turn on or off: email, sign-in with Microsoft Entra ID, and AI Parsers.
-- **System** (admins): the version and whether a newer release is out (with an update button), the HTTPS certificate (self-signed or Let's Encrypt), database size and uptime, and backups: create, schedule, download, upload, restore and delete.
+- **System** (admins): the version and whether a newer release is out (with an update button), the HTTPS certificate (self-signed or Let's Encrypt), how long events are kept, database size and uptime, and backups: create, schedule, download, upload, restore and delete.
 - **Account** (everyone; select your name at the bottom of the sidebar): your role and what it lets you see, the theme (System, Light
   or Dark), signing out, and how you sign in: a local password, which you can change here, or Microsoft Entra ID.
 
@@ -261,6 +261,7 @@ the raw text.
 | `GET`/`PUT /api/v1/integrations/ai`, `POST /api/v1/integrations/ai/test`, `GET /api/v1/integrations/ai/cloud-models` | admin | The [AI Parsers](#ai-parsers) settings (`{"provider": "local"/"openrouter"/"anthropic"/"google"/"openai"/"nvidia", "ollama_url", "local_model", "cloud_model", "send_addresses", "api_key", "key_for"}`; `api_key` is write-only and is for the service `key_for` (or `provider`): leaving it out keeps the saved one and `""` removes it; `openrouter_key` from v0.19 still works), with this server's hardware, the recommended model and the download's progress; a connection test (the same fields); and a service's models with the ones recommended (`GET ?provider=` uses the saved key, `POST {"provider", "api_key"}` the one given). |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/draft`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; draft a parser with no AI model from `{"text"}` (pasted text; pretty-printed JSON is split into objects) or `{"lines"}`, answering the definition, how many samples it reads, and the samples as lines; ask the AI model for a parser for `{"lines"}`. |
 | `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`, and `display_name` for a Microsoft account). A password sign-in refused by a [sign-in restriction](#sign-in-restrictions) gets `403`. |
+| `GET`/`PUT /api/v1/system/retention` | admin | How long events are kept: `{"days"}` (1 to 3650). The answer also gives the default, whether the page has set it, and the late-ingestion thresholds; shortening it deletes the events now too old, at once. |
 | `GET`/`PUT /api/v1/system/signin` | admin | The [sign-in restrictions](#sign-in-restrictions): `{"admin_local_only", "entra_only"}` (send either). The answer also says what is enforced now, the local port, and whether the request came in on it. Turning either on is refused without a local port; Microsoft-only also needs sign-in with Microsoft on and a local Admin account named `admin`. |
 | `POST /api/v1/me/password` | any signed-in user | Change your own password: `{"current_password", "new_password"}`. After 10 wrong current passwords in 15 minutes the account can't try again for the rest of the window (a limit of its own, separate from signing in); your other sessions end, this one continues. Refused for Microsoft accounts. |
 | `GET /health` | public | Up/down only. When signed in it also returns event count, database size, ingest queue state, indicator count and syslog counters. |
@@ -268,7 +269,8 @@ the raw text.
 Applications authenticate with `Authorization: Bearer <token>`. A missing or disabled token, or one whose source was deleted, returns `401`; a token used
 for anything but sending logs returns `403`.
 
-Events must be dated within the retention period and no more than a day ahead (a sender's clock can run a little fast).
+Events are stored under their own date, however late they arrive, as long as it is within the retention period (two years
+by default; see [Keeping events](#keeping-events)) and no more than a day ahead (a sender's clock can run a little fast).
 Others are refused and counted as rejected, with the reason, since each day's events are kept in their own file.
 
 ### Log parsing
@@ -470,10 +472,25 @@ every 10 seconds.
 | Threat intel match | any event involving an address, domain or hash on a threat list |
 | Critical event | any event rated Critical or Fatal, per host |
 | Failed sign-ins to SIEMLite | 5 failed sign-ins to SIEMLite itself from one address within 15 minutes |
+| Mass ingestion of late logs | 50 or more events more than 30 days old arriving from one source at once (High; see [Keeping events](#keeping-events)) |
 
 While an alert is open or acknowledged, more matching events add to it instead of raising a new one. Once it's closed,
 the next match raises a new alert. Built-in rules can be edited or switched off but not deleted. The [log
 generator](#test-logs)'s attacks raise alerts too.
+
+## Keeping events
+
+SIEMLite keeps events for two years by default. Change it on the **System** page (**Keep events**: 30 days, 90 days, 1 year,
+2 years or any number of days up to ten years); it takes effect at once. Once a day, events older than that are deleted,
+whole days at a time, and making the period shorter deletes them straight away (after asking). Before the page sets it,
+`-retention-days` (`SIEMLITE_RETENTION_DAYS`) does.
+
+Each event is stored under its own date, even when it arrives late, such as a batch of old logs sent at once. An event dated
+before the retention period is refused, since it would be deleted straight away. When 50 or more events more than 30 days
+old arrive from one source in one go (a burst ends after a quiet minute, or after ten minutes), SIEMLite records it in the
+[audit log](#audit-log) and the built-in rule **Mass ingestion of late logs** raises a High alert naming the source, how many
+events, and the dates they cover. The events themselves keep their own severity. Old logs loaded in bulk on purpose raise it
+too: close the alert once you know why.
 
 ## Audit log
 
@@ -734,7 +751,7 @@ by spaces.
 | `-http-addr` | | Plain-HTTP listen address for your own reverse proxy that does the HTTPS (off when empty). Never publish it |
 | `-trusted-proxies` | | Reverse proxies whose `X-Forwarded-For` is believed: addresses, networks or host names, e.g. `proxy`. With it set, the `-http-addr` port refuses everyone else |
 | `-db` | `siemlite.db` | SQLite database path; events go in a folder beside it named after it (`siemlite-events`) |
-| `-retention-days` | `30` | Delete events older than this many days (checked daily; whole days are deleted as files) |
+| `-retention-days` | `730` | Keep events this many days, two years by default (checked daily; whole days are deleted as files). The System page takes precedence once it is saved there |
 | `-tls-cert`, `-tls-key` | `<db dir>/siemlite.crt`, `.key` | Certificate and key; a self-signed pair is generated if both are missing |
 | `-tls-hosts` | | Extra DNS names or IPs for a generated certificate |
 | `-syslog-udp`, `-syslog-tcp`, `-syslog-tls` | | Syslog listen addresses, e.g. `:514`, `:514`, `:6514` (each off when empty) |
