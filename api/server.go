@@ -163,6 +163,7 @@ func (s *Server) Handler() http.Handler {
 	admin("PUT /api/v1/parsers/{id}", s.handleSaveParser)
 	admin("DELETE /api/v1/parsers/{id}", s.handleDeleteParser)
 	admin("POST /api/v1/parsers/test", s.handleTestParser)
+	admin("POST /api/v1/parsers/draft", s.handleDraftParser)
 	admin("POST /api/v1/parsers/suggest", s.handleSuggestParser)
 	mux.Handle("GET /api/v1/alerts", a.Require(auth.PermSearch, http.HandlerFunc(s.handleListAlerts)))
 	mux.Handle("PATCH /api/v1/alerts/{id}", a.Require(auth.PermSearch, http.HandlerFunc(s.handleSetAlertStatus)))
@@ -384,7 +385,15 @@ func (s *Server) handleLogs(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "ingest unavailable")
 		return
 	}
+	// One log per line; a body that is all JSON (pretty-printed objects, or
+	// arrays of them) gives one log per object instead.
 	lines := bytes.Split(body, []byte("\n"))
+	if objs, ok := parser.JSONValues(body); ok {
+		lines = make([][]byte, len(objs))
+		for i, o := range objs {
+			lines[i] = []byte(o)
+		}
+	}
 	events := make([]*ocsf.Event, 0, len(lines))
 	extras := make([]map[string]string, 0, len(lines))
 	for _, l := range lines {

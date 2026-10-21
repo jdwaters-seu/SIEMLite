@@ -734,6 +734,41 @@ func (s *Server) handleTestParser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"results": out})
 }
 
+// handleDraftParser writes a parser for sample lines with no AI model: the
+// format, and which fields hold the time, addresses, user, message and
+// severity. "text" is pasted text (pretty-printed JSON is split into
+// objects); "lines" are lines as they are. The samples used come back too.
+func (s *Server) handleDraftParser(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Text  string   `json:"text"`
+		Lines []string `json:"lines"`
+	}
+	if !decodeJSON(w, r, &req, maxParserBody) {
+		return
+	}
+	lines := req.Lines
+	if req.Text != "" {
+		lines = parser.SplitSamples(req.Text)
+	}
+	if len(lines) > 50 {
+		lines = lines[:50]
+	}
+	if len(lines) == 0 {
+		writeError(w, http.StatusBadRequest, "Paste a few sample lines first.")
+		return
+	}
+	def := parser.Draft(lines)
+	matched := 0
+	if p, err := parser.Compile(def); err == nil {
+		for _, l := range lines {
+			if _, err := p.Parse(l, parser.Defaults{}); err == nil {
+				matched++
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"definition": def, "matched": matched, "total": len(lines), "lines": lines})
+}
+
 func (s *Server) handleSuggestParser(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Lines []string `json:"lines"`
@@ -741,6 +776,8 @@ func (s *Server) handleSuggestParser(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req, maxParserBody) {
 		return
 	}
+	// Pretty-printed JSON pasted as samples becomes one object per line.
+	req.Lines = parser.SplitSamples(strings.Join(req.Lines, "\n"))
 	// A CPU-only model can take minutes; outlast the server's write timeout.
 	_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(5 * time.Minute))
 	ctx, cancel := context.WithTimeout(r.Context(), 4*time.Minute)

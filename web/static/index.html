@@ -818,10 +818,11 @@
         <div class="panel">
           <h2>Sample lines</h2>
           <label class="visually-hidden" for="pe-samples">Sample lines</label>
-          <textarea id="pe-samples" rows="7" spellcheck="false" placeholder="Paste a few log lines from this source, one per line"></textarea>
-          <div class="ai-row" id="pe-ai" hidden>
-            <button type="button" class="btn" id="pe-suggest">Suggest a parser</button>
-            <span class="hint" id="pe-ai-status">An AI model reads the sample lines and fills in the parser.</span>
+          <textarea id="pe-samples" rows="7" spellcheck="false" placeholder="Paste a few log lines from this source: one per line, or JSON objects as they come"></textarea>
+          <div class="ai-row" id="pe-ai">
+            <button type="button" class="btn" id="pe-draft">Draft a parser</button>
+            <button type="button" class="btn" id="pe-suggest" hidden>Suggest with AI</button>
+            <span class="hint" id="pe-ai-status">SIEMLite reads the sample lines and fills in the parser.</span>
           </div>
           <h2>Preview</h2>
           <p class="hint" id="pe-preview-summary">Add sample lines to see how they&rsquo;re read.</p>
@@ -2577,10 +2578,10 @@ async function openParserEditor(arg) {
   if (!templates.length) { try { templates = await apiJSON("/api/v1/parsers/templates"); } catch {} }
   pe("template").replaceChildren(el("option", { value: "", textContent: editId ? "Replace with a template" : "Start from scratch" }),
     ...templates.map((t, i) => el("option", { value: String(i), textContent: t.name })));
-  pe("ai").hidden = !(me.ai && me.ai.enabled);
-  pe("ai-status").textContent = !(me.ai && me.ai.ready) ? "The AI model is still downloading. It'll be ready in a few minutes."
-    : me.ai.provider && me.ai.provider !== "local" ? "A cloud AI model reads the sample lines and fills in the parser."
-    : "An AI model on this server reads the sample lines and fills in the parser.";
+  pe("suggest").hidden = !(me.ai && me.ai.enabled);
+  pe("ai-status").textContent = !(me.ai && me.ai.enabled) ? "SIEMLite reads the sample lines and fills in the parser."
+    : !me.ai.ready ? "Draft a parser fills it in from the samples. The AI model is still downloading; Suggest with AI will be ready in a few minutes."
+    : "Draft a parser fills it in from the samples; Suggest with AI also asks " + (me.ai.provider && me.ai.provider !== "local" ? "a cloud AI model." : "the AI model on this server.");
   let def = { name: "", format: "pattern", pattern: "", severity: { from: "auto" }, category: 6, samples: [] };
   if (editId) {
     try { def = (await apiJSON(`/api/v1/parsers/${editId}`)).definition; }
@@ -2743,7 +2744,52 @@ pe("save").onclick = async () => {
   } catch (err) { pe("error").textContent = err.message; pe("error").hidden = false; window.scrollTo(0, 0); }
 };
 pe("export").onclick = () => download(readDefinition());
+// Pasted JSON (pretty-printed objects, or an array of them) becomes one
+// object per line, as SIEMLite reads logs.
+function jsonObjects(text) {
+  const t = text.trim();
+  if (!t || (t[0] !== "{" && t[0] !== "[")) return null;
+  const out = [];
+  let depth = 0, start = -1, inStr = false, esc = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (inStr) { if (esc) esc = false; else if (c === "\\") esc = true; else if (c === '"') inStr = false; continue; }
+    if (c === '"') inStr = true;
+    else if (c === "{" || c === "[") { if (depth === 0) start = i; depth++; }
+    else if (c === "}" || c === "]") {
+      depth--;
+      if (depth < 0) return null;
+      if (depth === 0) {
+        let v;
+        try { v = JSON.parse(t.slice(start, i + 1)); } catch { return null; }
+        for (const o of Array.isArray(v) ? v : [v]) out.push(JSON.stringify(o));
+      }
+    } else if (depth === 0 && !/\s|,/.test(c)) return null;
+  }
+  return depth === 0 && out.length ? out : null;
+}
+function normalizeSamples() {
+  const objs = jsonObjects(pe("samples").value);
+  if (objs && objs.join("\n") !== pe("samples").value.trim()) { pe("samples").value = objs.join("\n"); runPreview(); }
+}
+pe("samples").addEventListener("paste", () => setTimeout(normalizeSamples, 0));
+pe("samples").addEventListener("blur", normalizeSamples);
+pe("draft").onclick = async () => {
+  normalizeSamples();
+  const text = pe("samples").value;
+  if (!text.trim()) { pe("ai-status").textContent = "Paste a few sample lines first."; pe("samples").focus(); return; }
+  pe("draft").disabled = true;
+  try {
+    const s = await apiJSON("/api/v1/parsers/draft", { method: "POST", json: { text } });
+    fillEditor({ ...s.definition, name: pe("name").value.trim() || "", description: pe("desc").value.trim(), samples: s.lines });
+    pe("ai-status").textContent = s.matched === s.total
+      ? `Drafted a parser that reads all ${s.total} sample lines. Check the preview and the field mapping before saving.`
+      : `Drafted a parser that reads ${s.matched} of ${s.total} sample lines. Adjust it, then check the preview.`;
+  } catch (err) { pe("ai-status").textContent = err.message; }
+  pe("draft").disabled = false;
+};
 pe("suggest").onclick = async () => {
+  normalizeSamples();
   const lines = pe("samples").value.split("\n").filter((l) => l.trim());
   if (!lines.length) { pe("ai-status").textContent = "Paste a few sample lines first."; pe("samples").focus(); return; }
   const btn = pe("suggest");
