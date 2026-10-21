@@ -418,6 +418,19 @@ def main(binary, loggen):
             rows = " ".join(page.locator("tr.ev").all_inner_texts())
             check("INTERNAL" in rows and "Sign-in failed" in rows, "a failed sign-in is in the audit log from INTERNAL")
 
+            # Dragging the | between two column headers resizes the columns,
+            # with a real mouse (the Database table sizes its columns with <col>s).
+            first = page.locator("table.events thead th").first
+            w0 = first.bounding_box()["width"]
+            grip = first.locator(".col-grip").bounding_box()
+            x, y = grip["x"] + grip["width"] / 2, grip["y"] + grip["height"] / 2
+            page.mouse.move(x, y)
+            page.mouse.down()
+            page.mouse.move(x + 40, y, steps=5)
+            page.mouse.up()
+            w1 = first.bounding_box()["width"]
+            check(abs(w1 - w0 - 40) < 3, f"dragging a column divider resizes the column ({w0:.0f}px to {w1:.0f}px)")
+
             # Acknowledge and close an alert.
             page.goto(url + "#/alerts")
             page.wait_for_selector("#alerts-body tr")
