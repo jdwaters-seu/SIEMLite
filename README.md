@@ -53,15 +53,28 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.19.1` in `.env` and run `docker compose pull && docker compose up -d`.
-Or build from the checkout, and deploy and upgrade with one command:
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.20` in `.env` to use it, or leave it out to build from the
+checkout. Either way, start and update with `./update.sh`:
 
 ```sh
 git clone https://github.com/justwaters/SIEMLite.git && cd SIEMLite
 cp .env.example .env        # optional: ports, certificate names, GeoIP, feeds, retention
-git pull && docker compose up -d --build
+./update.sh                 # starts SIEMLite; run it again to update
 docker compose logs siemlite | grep -A1 'username: admin'   # the admin password, printed on first start
 ```
+
+`./update.sh` gets the newest release (moving `SIEMLITE_IMAGE` in `.env` to it) or, when built from the checkout, runs
+`git pull` and rebuilds; then it restarts SIEMLite, says which version it went from and to, and waits until it is healthy:
+
+```
+Downloading SIEMLite v0.19.1...
+Updating SIEMLite v0.19 -> v0.19.1
+SIEMLite v0.19.1 is up.
+```
+
+`./update.sh v0.19` picks a particular release. Going back to an older one warns that the database may have been changed
+by the newer version, and asks first. `docker compose pull && docker compose up -d` (or `docker compose up -d --build`)
+still works too; it just doesn't say what changed.
 
 The password is printed only by the first container. Rebuilding replaces the container and its logs, so if you
 missed it, set a new one: `docker compose exec siemlite siemlite users passwd -username admin`.
@@ -498,7 +511,7 @@ Pass `-update-check=false` (or `SIEMLITE_UPDATE_CHECK=false`) to stop SIEMLite c
   so a bad update can't stop the container from starting. This needs no access to the Docker socket.
   `docker compose exec siemlite siemlite ...` commands (and `siemlite version`) still run the image's own version
   until the image is rebuilt or pulled.
-- If SIEMLite can't write where it needs to, the card says so and shows `docker compose pull && docker compose up -d`.
+- If SIEMLite can't write where it needs to, the card says so and suggests `./update.sh` (see [Run with Docker](#run-with-docker)).
 
 ## Integrations
 
