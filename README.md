@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.20` in `.env` to use it, or leave it out to build from the
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.21` in `.env` to use it, or leave it out to build from the
 checkout. Either way, start and update with `./update.sh`:
 
 ```sh
@@ -177,7 +177,8 @@ From the command line:
 ./siemlite keys create -name myapp
 ```
 
-Then post logs, one per line:
+Then post logs, one per line. A body that is all JSON (pretty-printed objects, or arrays of them) is read one object at a
+time instead, so an app can send its JSON logs as it prints them:
 
 ```sh
 curl --cacert siemlite.crt -X POST 'https://localhost:8443/api/v1/logs?source=myapp' \
@@ -258,7 +259,7 @@ the raw text.
 | `GET`/`POST /api/v1/backups`, `PUT /api/v1/backups/settings`, `POST /api/v1/backups/upload` | admin | List backups and the job status, start a backup, set the schedule (`{"interval_hours": 0/6/24/168, "keep"}`), upload a backup file. |
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
 | `GET`/`PUT /api/v1/integrations/ai`, `POST /api/v1/integrations/ai/test`, `GET /api/v1/integrations/ai/cloud-models` | admin | The [AI Parsers](#ai-parsers) settings (`{"provider": "local"/"openrouter"/"anthropic"/"google"/"openai"/"nvidia", "ollama_url", "local_model", "cloud_model", "send_addresses", "api_key", "key_for"}`; `api_key` is write-only and is for the service `key_for` (or `provider`): leaving it out keeps the saved one and `""` removes it; `openrouter_key` from v0.19 still works), with this server's hardware, the recommended model and the download's progress; a connection test (the same fields); and a service's models with the ones recommended (`GET ?provider=` uses the saved key, `POST {"provider", "api_key"}` the one given). |
-| `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
+| `POST /api/v1/parsers/test`, `POST /api/v1/parsers/draft`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; draft a parser with no AI model from `{"text"}` (pasted text; pretty-printed JSON is split into objects) or `{"lines"}`, answering the definition, how many samples it reads, and the samples as lines; ask the AI model for a parser for `{"lines"}`. |
 | `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`, and `display_name` for a Microsoft account). A password sign-in refused by a [sign-in restriction](#sign-in-restrictions) gets `403`. |
 | `GET`/`PUT /api/v1/system/signin` | admin | The [sign-in restrictions](#sign-in-restrictions): `{"admin_local_only", "entra_only"}` (send either). The answer also says what is enforced now, the local port, and whether the request came in on it. Turning either on is refused without a local port; Microsoft-only also needs sign-in with Microsoft on and a local Admin account named `admin`. |
 | `POST /api/v1/me/password` | any signed-in user | Change your own password: `{"current_password", "new_password"}`. After 10 wrong current passwords in 15 minutes the account can't try again for the rest of the window (a limit of its own, separate from signing in); your other sessions end, this one continues. Refused for Microsoft accounts. |
@@ -296,6 +297,17 @@ values to keep. Choose how a source's lines are read on the Sources page:
 - **A parser** you built, as below.
 
 Build one on the Parsers page: paste a few sample lines, describe them, and the preview shows how each line is read.
+
+Or let SIEMLite build it: paste the samples and choose **Draft a parser**. It needs no AI model. SIEMLite works out the
+format (JSON, key=value, syslog or free text) and, for JSON and key=value lines, which keys hold what, from both their names
+and their values: timestamps become the time, IP addresses the source or destination (by names like `dest_`), `detail` or
+`description` the message, `username` or `actor` the user, a level field the severity. Without a level field, an action,
+outcome or status field decides it (failures and refusals medium, deletions and permission changes low, the rest
+informational; for HTTP status codes, 5xx medium and 4xx low). Free text gets a pattern that matches every sample. Check the
+preview and the field mapping, adjust anything, and save. With [AI Parsers](#ai-parsers) on, **Suggest with AI** starts from
+the same draft and asks the model to improve it.
+
+JSON can be pasted as it comes: pretty-printed objects, or an array of them, become one object per line.
 
 - **Text with a fixed layout**: write one line out with `{name}` where values change, e.g.
   `{src_ip} - {user} [{time}] "{method} {path} {protocol}" {status}`. Spaces match any run of spaces, `{}` skips text,

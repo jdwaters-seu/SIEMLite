@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/netip"
 	"regexp"
 	"sort"
 	"strings"
@@ -53,22 +52,35 @@ func suggest(ctx context.Context, ch chatter, log *slog.Logger, lines []string) 
 		prompt := "These log lines are " + map[string]string{"json": "JSON objects", "kv": "key=value pairs"}[format] +
 			". Their fields are: " + strings.Join(names, ", ") + "\n\nSample lines:\n" + strings.Join(bodies, "\n")
 		def, _, err := ask(ctx, ch, []map[string]string{{"role": "system", "content": mappingPrompt}, {"role": "user", "content": prompt}}, mappingSchema)
-		base.Fields = obviousMappings(base, bodies)
+		// SIEMLite's own draft is the base; the model adds what it missed.
+		draft := parser.Draft(samples)
+		base.Fields, base.Severity, base.Category = draft.Fields, draft.Severity, draft.Category
 		if errors.Is(err, errCouldntMask) {
 			return nil, err
 		}
 		if err != nil {
-			log.Warn("AI field mapping failed; using automatic mapping", "err", err)
+			log.Warn("AI field mapping failed; using SIEMLite's own draft", "err", err)
 		} else {
-			for k, v := range keepKnown(def.Fields, names) {
-				base.Fields[k] = v
+			taken := map[string]bool{}
+			for _, t := range base.Fields {
+				taken[t] = true
 			}
-			base.Severity, base.Category = def.Severity, def.Category
+			for k, v := range keepKnown(def.Fields, names) {
+				if base.Fields[k] == "" && !taken[v] {
+					base.Fields[k], taken[v] = v, true
+				}
+			}
+			if base.Severity.From == "auto" && !taken["severity"] {
+				base.Severity = def.Severity
+			}
+			if base.Category == 6 && def.Category != 0 {
+				base.Category = def.Category
+			}
 		}
 		s, _ := score(base, samples)
 		if s.Matched < s.Total || compileErr(base) != nil {
-			// The model's severity or mapping broke the parser: fall back.
-			base.Fields, base.Severity = nil, parser.SeverityRule{From: "auto"}
+			// The model's additions broke the parser: keep the draft alone.
+			base.Fields, base.Severity, base.Category = draft.Fields, draft.Severity, draft.Category
 			s, _ = score(base, samples)
 		}
 		s.Attempts = 1
@@ -208,61 +220,6 @@ func fieldNames(def parser.Definition, bodies []string) []string {
 	sort.Strings(names)
 	return names
 }
-
-// obviousMappings maps nested keys whose last part is a known name
-// (actor.ip, client.user) and fields whose values are all IP addresses.
-func obviousMappings(def parser.Definition, bodies []string) map[string]string {
-	out := map[string]string{}
-	p, err := parser.Compile(def)
-	if err != nil {
-		return out
-	}
-	values := map[string][]string{}
-	for _, b := range bodies {
-		f, err := p.Fields(b)
-		if err != nil {
-			continue
-		}
-		for k, v := range f {
-			values[k] = append(values[k], v)
-		}
-	}
-	taken := map[string]bool{}
-	keys := make([]string, 0, len(values))
-	for k := range values {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		leaf := strings.ToLower(k[strings.LastIndex(k, ".")+1:])
-		if t, ok := leafTargets[leaf]; ok && strings.Contains(k, ".") && !taken[t] {
-			out[k], taken[t] = t, true
-		}
-	}
-	for _, k := range keys {
-		if _, done := out[k]; done {
-			continue
-		}
-		allIP := true
-		for _, v := range values[k] {
-			if _, err := netip.ParseAddr(v); err != nil {
-				allIP = false
-			}
-		}
-		if allIP {
-			for _, t := range []string{"src_ip", "dst_ip"} {
-				if !taken[t] {
-					out[k], taken[t] = t, true
-					break
-				}
-			}
-		}
-	}
-	return out
-}
-
-var leafTargets = map[string]string{"ip": "src_ip", "addr": "src_ip", "address": "src_ip", "user": "user", "username": "user",
-	"name": "user", "host": "host", "hostname": "host", "port": "src_port"}
 
 // keepKnown drops mappings for fields the lines don't have.
 func keepKnown(fields map[string]string, names []string) map[string]string {
