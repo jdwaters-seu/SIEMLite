@@ -212,7 +212,16 @@
   .table-wrap { position: relative; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; overflow-x: auto; }
   table.data { width: 100%; border-collapse: collapse; }
   table.events { table-layout: fixed; min-width: 760px; }
-  .data th { text-align: left; font-weight: 500; font-size: 12.5px; color: var(--ink-2); padding: 9px 12px; border-bottom: 1px solid var(--rule); white-space: nowrap; }
+  .data th { text-align: left; font-weight: 500; font-size: 12.5px; color: var(--ink-2); padding: 9px 12px; border-bottom: 1px solid var(--rule); white-space: nowrap; position: relative; }
+  /* Column dividers: drag to resize, double-click to reset. */
+  .col-grip { position: absolute; top: 0; right: 0; z-index: 1; width: 14px; height: 100%; display: flex; align-items: center; justify-content: center;
+              cursor: col-resize; user-select: none; touch-action: none; color: var(--ink-2); opacity: .45; }
+  .col-grip::before { content: "|"; font-weight: 400; }
+  .col-grip:hover, .col-grip:focus-visible, .col-grip.dragging { opacity: 1; color: var(--ink); }
+  .col-grip:focus-visible { outline-offset: -2px; }
+  table.data.sized { table-layout: fixed; }
+  table.data.sized th { overflow: hidden; text-overflow: ellipsis; }
+  table.data.sized td { overflow-wrap: anywhere; }
   .data td { padding: 9px 12px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
   .data tbody tr:last-child td { border-bottom: 0; }
   .events td { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: top; }
@@ -1079,7 +1088,6 @@
       </div>
       <form class="panel sched" id="tls-form" autocomplete="off">
         <div><h2>HTTPS certificate</h2>
-          <p class="hint">How SIEMLite proves who it is to browsers and to syslog over TLS.</p>
           <p class="hint" id="tls-status">Checking…</p></div>
         <div class="sched-fields">
           <div class="seg" role="group" aria-label="Certificate">
@@ -1373,6 +1381,74 @@ function notice(node, text, ok) {
   node.hidden = !text; node.textContent = text || "";
   node.className = node.className.replace(/\b(ok|bad)\b/g, "").trim() + (text ? (ok ? " ok" : " bad") : "");
 }
+
+// --- Resizable columns ---
+// Each table's column headers get a "|" divider to drag (or move with the
+// arrow keys); double-click one to go back to the automatic widths. Widths
+// are remembered in this browser, per table.
+function resizableColumns(table) {
+  if (!table.tHead || table.dataset.cols) return;
+  table.dataset.cols = "1";
+  const ths = [...table.tHead.rows[0].cells];
+  const section = table.closest("section[id]");
+  const key = `siemlite-cols:${section ? section.id : ""}:${[...(section || document).querySelectorAll("table.data")].indexOf(table)}`;
+  const save = () => { try { localStorage.setItem(key, JSON.stringify(ths.map((h) => Math.round(h.getBoundingClientRect().width)))); } catch {} };
+  try {
+    const w = JSON.parse(localStorage.getItem(key) || "null");
+    if (Array.isArray(w) && w.length === ths.length && w.every((n) => n > 0)) {
+      ths.forEach((h, i) => { h.style.width = w[i] + "px"; });
+      table.classList.add("sized");
+    }
+  } catch {}
+  const freeze = () => {
+    if (table.classList.contains("sized")) return;
+    const ws = ths.map((h) => h.getBoundingClientRect().width);
+    ths.forEach((h, i) => { h.style.width = ws[i] + "px"; });
+    table.classList.add("sized");
+  };
+  const MIN = 40;
+  // Moves the line between column i and i+1, so the table keeps its width.
+  const move = (i, d, startW, nextW) => {
+    d = Math.max(-(startW - MIN), Math.min(d, nextW - MIN));
+    ths[i].style.width = (startW + d) + "px";
+    ths[i + 1].style.width = (nextW - d) + "px";
+  };
+  // A last column of buttons keeps its width: the line before it isn't movable.
+  const last = ths.at(-1).querySelector(".visually-hidden") ? ths.length - 2 : ths.length - 1;
+  ths.slice(0, last).forEach((th, i) => {
+    const grip = el("span", { className: "col-grip", tabIndex: 0, title: "Drag to resize the column. Double-click to reset." });
+    grip.setAttribute("role", "separator");
+    grip.setAttribute("aria-orientation", "vertical");
+    grip.setAttribute("aria-label", `Resize the ${th.textContent.trim() || "actions"} column`);
+    grip.onpointerdown = (e) => {
+      e.preventDefault();
+      freeze();
+      const startX = e.clientX, startW = ths[i].getBoundingClientRect().width, nextW = ths[i + 1].getBoundingClientRect().width;
+      grip.setPointerCapture(e.pointerId);
+      grip.classList.add("dragging");
+      grip.onpointermove = (m) => move(i, m.clientX - startX, startW, nextW);
+      grip.onpointerup = grip.onpointercancel = () => {
+        grip.onpointermove = grip.onpointerup = grip.onpointercancel = null;
+        grip.classList.remove("dragging");
+        save();
+      };
+    };
+    grip.onkeydown = (e) => {
+      if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+      e.preventDefault();
+      freeze();
+      move(i, e.key === "ArrowLeft" ? -16 : 16, ths[i].getBoundingClientRect().width, ths[i + 1].getBoundingClientRect().width);
+      save();
+    };
+    grip.ondblclick = () => {
+      ths.forEach((h) => { h.style.width = ""; });
+      table.classList.remove("sized");
+      try { localStorage.removeItem(key); } catch {}
+    };
+    th.append(grip);
+  });
+}
+for (const t of document.querySelectorAll("table.data")) resizableColumns(t);
 
 // --- Theme ---
 function setTheme(choice) {
@@ -1826,9 +1902,11 @@ function segment(x, y, w, h, roundTop, fill) {
 function renderTable(s) {
   const rows = s.overview.buckets.map((b) => el("tr", {}, el("td", { textContent: bucketLabel(b.start, s.bucket_ms, true) }),
     el("td", { textContent: nf.format(b.count) }), el("td", { textContent: nf.format(b.threats) })));
-  $("chart-table").replaceChildren(el("div", { className: "table-wrap" }, el("table", { className: "data" },
+  const table = el("table", { className: "data" },
     el("thead", {}, el("tr", {}, el("th", { textContent: "Period starting" }), el("th", { textContent: "Events" }), el("th", { textContent: "Threat intel matches" }))),
-    el("tbody", {}, ...rows))));
+    el("tbody", {}, ...rows));
+  $("chart-table").replaceChildren(el("div", { className: "table-wrap" }, table));
+  resizableColumns(table);
 }
 $("chart-table-btn").onclick = () => {
   const open = $("chart-table").hidden;
@@ -3489,19 +3567,15 @@ function tlsFill(v) {
   const st = $("tls-status"), self = v.self_signed_certificate || {};
   clearTimeout(tlsPoll);
   if (v.mode !== "letsencrypt") {
-    st.textContent = (self.self_signed ? "Using SIEMLite's self-signed certificate" : `Using the certificate files set with -tls-cert (issued by ${self.issuer})`) +
-      (self.not_after ? `, valid until ${tlsDate(self.not_after)}.` : ".") +
-      (self.self_signed ? " Browsers warn about it unless they trust siemlite.crt. That's fine for testing and private networks; for the internet, use Let's Encrypt." : "");
+    st.textContent = (self.self_signed ? "Self-signed" : `Certificate files (issued by ${self.issuer})`) +
+      (self.not_after ? `, valid until ${tlsDate(self.not_after)}.` : ".");
     return;
   }
   const le = v.letsencrypt_certificate;
-  let text = `Let's Encrypt for ${v.domain}. `;
-  if (le) text += `Certificate issued by ${le.issuer}, valid until ${tlsDate(le.not_after)}; it renews by itself. `;
-  else if (v.obtaining) text += "Getting the certificate now… ";
-  else if (v.last_error) text += v.last_error + " ";
-  if (v.resolves_to) text += `The name points to ${v.resolves_to.join(", ")}. `;
-  else if (v.resolve_error) text += v.resolve_error + " ";
-  text += "Anyone using another address (an IP or a LAN name) still gets the self-signed certificate, so it stays reachable.";
+  let text = `Let's Encrypt for ${v.domain}`;
+  if (le) text += `, valid until ${tlsDate(le.not_after)} (renews by itself).`;
+  else if (v.obtaining) text += ": getting the certificate…";
+  else text += ": " + (v.last_error || v.resolve_error || "waiting for the certificate.");
   st.textContent = text;
   if (v.obtaining || (!le && !v.last_error)) tlsPoll = setTimeout(loadTLS, 2000); // follow it until it's done
 }
