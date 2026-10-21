@@ -580,3 +580,66 @@ func TestMicrosoftDisplayName(t *testing.T) {
 		t.Errorf("sign-out audit = %d %+v", res.Count, res.Events)
 	}
 }
+
+// TestDisplayNameCantPassForAnotherAccount: a display name is free text in
+// Entra, so one that could be taken for another account isn't shown; the
+// account's email is shown instead.
+func TestDisplayNameCantPassForAnotherAccount(t *testing.T) {
+	e := newEnv(t)
+	e.user("root", auth.RoleAdmin)
+	e.user("admin", auth.RoleAdmin)
+	root := e.client()
+	e.login(root, "root", password)
+	e.ms.Set(entratest.AccessGroup, annOID, true)
+	e.ms.Set(entratest.AccessGroup, caraOID, true)
+	e.ms.Names = map[string]string{annOID: "Pat Smith", caraOID: "Cara Jones"}
+	if got := e.call(root, "PUT", "/api/v1/integrations/entra", entraForm(e), nil, nil); got != 200 {
+		t.Fatalf("save = %d", got)
+	}
+	signIn := func(oid, upn string) string {
+		br := e.browser()
+		authURL, state := e.startSSO(br)
+		e.ms.Expect(authURL, oid, upn)
+		e.get(br, "/api/v1/auth/entra/callback?code="+entratest.Code+"&state="+state)
+		var me struct {
+			Username    string `json:"username"`
+			DisplayName string `json:"display_name"`
+		}
+		if got := e.call(br, "GET", "/api/v1/me", nil, &me, nil); got != 200 || me.Username != upn {
+			t.Fatalf("%s: me = %d %+v", upn, got, me)
+		}
+		return me.DisplayName
+	}
+	if got := signIn(annOID, "ann@example.com"); got != "Pat Smith" {
+		t.Fatalf("an ordinary name = %q", got)
+	}
+	for _, name := range []string{
+		"ADMIN",                            // a local account's username
+		"Pat Smith",                        // another person's display name
+		"ann@example.com",                  // another account's email
+		"Justin Waters (justin@fisni.com)", // shaped like "Name (account)"
+		"root ",                            // tidied, then a username
+	} {
+		e.ms.Names[caraOID] = name
+		if got := signIn(caraOID, "cara@example.com"); got != "" {
+			t.Errorf("%q was shown as %q", name, got)
+		}
+	}
+	// The membership check applies the same rule.
+	e.ms.Names[caraOID] = "Cara Jones"
+	signIn(caraOID, "cara@example.com")
+	e.ms.Names[caraOID] = "Pat Smith"
+	if got := e.call(root, "POST", "/api/v1/integrations/entra/sync", nil, nil, nil); got != 200 {
+		t.Fatalf("sync = %d", got)
+	}
+	var users []struct {
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+	}
+	e.call(root, "GET", "/api/v1/users", nil, &users, nil)
+	for _, u := range users {
+		if u.Username == "cara@example.com" && u.DisplayName != "" {
+			t.Errorf("after the check, cara shows as %q", u.DisplayName)
+		}
+	}
+}
