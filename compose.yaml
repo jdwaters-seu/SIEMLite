@@ -1,10 +1,10 @@
-# Deploy or upgrade with: git pull && docker compose up -d --build
+# Start and update with ./update.sh (it says which version it goes from and to).
 # Settings go in .env (copy .env.example). Data lives in the siemlite-data volume.
 services:
   siemlite:
     build: .
     # Set SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:<version> in .env to run a
-    # prebuilt release (docker compose pull && docker compose up -d) instead.
+    # prebuilt release (./update.sh keeps it on the newest) instead.
     image: ${SIEMLITE_IMAGE:-siemlite:local}
     restart: unless-stopped
     command:

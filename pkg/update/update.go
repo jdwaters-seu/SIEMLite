@@ -197,7 +197,7 @@ func (c *Checker) target() string {
 	return c.Exe
 }
 
-const containerAdvice = "update by pulling the new image: docker compose pull && docker compose up -d"
+const containerAdvice = "update it from the SIEMLite folder on the server with ./update.sh (or docker compose pull && docker compose up -d)"
 
 // canApply says whether this install can update itself.
 func (c *Checker) canApply() (bool, string) {
