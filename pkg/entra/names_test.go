@@ -29,6 +29,7 @@ func TestShowableName(t *testing.T) {
 		"ＡＤＭＩＮ":                     "", // fullwidth
 		"ad\u200bmin":               "", // zero-width space
 		"аdmin":                     "", // Cyrillic а: mixed alphabets
+		"аԁміп":                     "", // all Cyrillic, looks like admin (п isn't in Unicode's list)
 		"\u0440\u043e\u0435":        "", // all Cyrillic р о е, looks like the user poe
 		"Admİn":                     "", // dotted capital I
 		"r00t":                      "", // digits for letters

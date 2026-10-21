@@ -194,8 +194,12 @@ func alike(a []string, b string) bool {
 }
 
 // mapConfusables replaces each character with the one Unicode says it can be
-// confused with, as UTS #39 does on the original characters.
+// confused with, as UTS #39 does, and then with the extra lookalikes below.
 func mapConfusables(s string) string {
+	// The extras go first too: Unicode's list sends some of them elsewhere
+	// (Cyrillic м to ʍ, п to Greek π) rather than to the Latin letter they
+	// pass for.
+	s = strings.Map(extra, s)
 	m := confusables()
 	var b strings.Builder
 	for _, r := range s {
@@ -205,7 +209,29 @@ func mapConfusables(s string) string {
 			b.WriteRune(r)
 		}
 	}
-	return b.String()
+	return strings.Map(extra, b.String())
+}
+
+func extra(r rune) rune {
+	if l, ok := extraLookalikes[r]; ok {
+		return l
+	}
+	return r
+}
+
+// extraLookalikes are letters that pass for Latin ones in many fonts but
+// aren't in Unicode's list. A false match only means the email is shown
+// instead of the name, so the list leans towards matching.
+var extraLookalikes = map[rune]rune{
+	// Cyrillic
+	'а': 'a', 'в': 'b', 'е': 'e', 'ё': 'e', 'з': '3', 'к': 'k', 'м': 'm', 'н': 'h', 'о': 'o', 'р': 'p', 'с': 'c',
+	'т': 't', 'у': 'y', 'х': 'x', 'і': 'l', 'ї': 'l', 'ј': 'j', 'ѕ': 's', 'ԁ': 'd', 'һ': 'h', 'ӏ': 'l', 'ԛ': 'q',
+	'ԝ': 'w', 'ү': 'y', 'ь': 'b', 'ъ': 'b', 'п': 'n', 'г': 'r', 'и': 'u', 'л': 'n', 'ɡ': 'g',
+	// Greek
+	'α': 'a', 'β': 'b', 'ε': 'e', 'η': 'n', 'ι': 'l', 'κ': 'k', 'ν': 'v', 'ο': 'o', 'ρ': 'p', 'τ': 't', 'υ': 'u',
+	'χ': 'x', 'γ': 'y', 'μ': 'u', 'ω': 'w', 'σ': 'o', 'ς': 's', 'π': 'n',
+	// Latin and digits easily mistaken
+	'0': 'o', '1': 'l', 'i': 'l', 'ı': 'l', '|': 'l', 'ʍ': 'm',
 }
 
 // ShowableName is the display name to show for account u, or "" to show its
