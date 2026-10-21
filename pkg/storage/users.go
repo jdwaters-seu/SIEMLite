@@ -32,6 +32,10 @@ type User struct {
 	AuthProvider string `json:"auth_provider"`
 	ExternalID   string `json:"-"`
 	Disabled     bool   `json:"disabled"`
+	// DisplayName is the name to show, such as "Justin Waters" for a
+	// Microsoft account; empty for most local accounts. Username stays the
+	// unique name that identifies the account.
+	DisplayName string `json:"display_name"`
 }
 
 // Sign-in providers.
@@ -65,8 +69,8 @@ func (r *Repository) userWithHash(ctx context.Context, where string, arg any) (*
 	var u User
 	var hash string
 	err := r.db.Read.QueryRowContext(ctx,
-		`SELECT id, username, role, created_at, password_hash, auth_provider, disabled FROM users WHERE `+where,
-		arg).Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &hash, &u.AuthProvider, &u.Disabled)
+		`SELECT id, username, role, created_at, password_hash, auth_provider, disabled, display_name FROM users WHERE `+where,
+		arg).Scan(&u.ID, &u.Username, &u.Role, &u.CreatedAt, &hash, &u.AuthProvider, &u.Disabled, &u.DisplayName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, "", ErrUserNotFound
 	}
@@ -78,7 +82,7 @@ func (r *Repository) userWithHash(ctx context.Context, where string, arg any) (*
 
 // ListUsers returns all users.
 func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
-	rows, err := r.db.Read.QueryContext(ctx, `SELECT id, username, role, limited, created_at, auth_provider, external_id, disabled FROM users ORDER BY id`)
+	rows, err := r.db.Read.QueryContext(ctx, `SELECT id, username, role, limited, created_at, auth_provider, external_id, disabled, display_name FROM users ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("list users: %w", err)
 	}
@@ -86,7 +90,7 @@ func (r *Repository) ListUsers(ctx context.Context) ([]User, error) {
 	var out []User
 	for rows.Next() {
 		var u User
-		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider, &u.ExternalID, &u.Disabled); err != nil {
+		if err := rows.Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider, &u.ExternalID, &u.Disabled, &u.DisplayName); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -122,8 +126,8 @@ func (r *Repository) userSources(ctx context.Context, userID int64) ([]int64, er
 // GetUser returns a user by id.
 func (r *Repository) GetUser(ctx context.Context, id int64) (*User, error) {
 	var u User
-	err := r.db.Read.QueryRowContext(ctx, `SELECT id, username, role, limited, created_at, auth_provider, external_id, disabled FROM users WHERE id = ?`, id).
-		Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider, &u.ExternalID, &u.Disabled)
+	err := r.db.Read.QueryRowContext(ctx, `SELECT id, username, role, limited, created_at, auth_provider, external_id, disabled, display_name FROM users WHERE id = ?`, id).
+		Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider, &u.ExternalID, &u.Disabled, &u.DisplayName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -317,10 +321,10 @@ func (r *Repository) CreateSession(ctx context.Context, tokenHash string, userID
 func (r *Repository) FindSession(ctx context.Context, tokenHash string, nowMs int64) (*User, error) {
 	var u User
 	err := r.db.Read.QueryRowContext(ctx,
-		`SELECT u.id, u.username, u.role, u.limited, u.created_at, u.auth_provider FROM sessions s
+		`SELECT u.id, u.username, u.role, u.limited, u.created_at, u.auth_provider, u.display_name FROM sessions s
 		 JOIN users u ON u.id = s.user_id
 		 WHERE s.token_hash = ? AND s.expires_at > ? AND u.disabled = 0`,
-		tokenHash, nowMs).Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider)
+		tokenHash, nowMs).Scan(&u.ID, &u.Username, &u.Role, &u.Limited, &u.CreatedAt, &u.AuthProvider, &u.DisplayName)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -379,6 +383,14 @@ func (r *Repository) CreateExternalUser(ctx context.Context, provider, externalI
 		return 0, fmt.Errorf("create user: %w", err)
 	}
 	return res.LastInsertId()
+}
+
+// SetDisplayName changes the name shown for an account.
+func (r *Repository) SetDisplayName(ctx context.Context, id int64, name string) error {
+	if _, err := r.db.Write.ExecContext(ctx, `UPDATE users SET display_name = ? WHERE id = ?`, name, id); err != nil {
+		return fmt.Errorf("set display name: %w", err)
+	}
+	return nil
 }
 
 // ListExternalUsers returns the accounts that sign in through a provider.

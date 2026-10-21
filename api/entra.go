@@ -257,6 +257,6 @@ func (s *Server) handleEntraCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	auth.SetSessionCookie(w, token)
-	s.audit(r, audit.Entry{Action: "signin.sso", Actor: user.Username, Class: audit.Authentication, Message: user.Username + " signed in with Microsoft"})
+	s.audit(r, audit.Entry{Action: "signin.sso", Actor: user.Username, Class: audit.Authentication, Message: (&auth.Principal{Name: user.Username, DisplayName: user.DisplayName}).Label() + " signed in with Microsoft"})
 	s.ssoRedirect(w, r, "")
 }

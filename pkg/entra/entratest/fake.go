@@ -42,6 +42,8 @@ type Microsoft struct {
 	NoFilter bool
 	// Lag is a member the filtered lookup doesn't know about yet.
 	Lag string
+	// Names are display names by object ID (default "Test Person").
+	Names map[string]string
 	// Filtered counts filtered member lookups; Listed counts full member list reads.
 	Filtered, Listed int
 	Opts             TokenOptions
@@ -158,7 +160,7 @@ func (f *Microsoft) idToken() string {
 		exp = time.Now().Add(-time.Hour)
 	}
 	cl := map[string]any{"iss": iss, "aud": aud, "tid": tid, "oid": f.user.oid, "preferred_username": f.user.upn,
-		"name": "Test Person", "exp": exp.Unix(), "nbf": time.Now().Add(-time.Minute).Unix(), "iat": time.Now().Unix()}
+		"name": f.nameOf(f.user.oid), "exp": exp.Unix(), "nbf": time.Now().Add(-time.Minute).Unix(), "iat": time.Now().Unix()}
 	if !o.NoNonce {
 		cl["nonce"] = f.pending.nonce
 	}
@@ -248,7 +250,7 @@ func (f *Microsoft) graph(w http.ResponseWriter, r *http.Request) {
 		end := min(skip+size, len(ids))
 		page := []map[string]any{}
 		for _, id := range ids[skip:end] {
-			page = append(page, map[string]any{"id": id, "accountEnabled": members[id]})
+			page = append(page, map[string]any{"id": id, "accountEnabled": members[id], "displayName": f.nameOf(id)})
 		}
 		res := map[string]any{"value": page}
 		if end < len(ids) {
@@ -284,4 +286,11 @@ func (f *Microsoft) Remove(group, oid string) {
 	f.mu.Lock()
 	delete(f.groups[group], strings.ToLower(oid))
 	f.mu.Unlock()
+}
+
+func (f *Microsoft) nameOf(oid string) string {
+	if n, ok := f.Names[strings.ToLower(oid)]; ok {
+		return n
+	}
+	return "Test Person"
 }

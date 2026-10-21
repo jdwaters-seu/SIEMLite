@@ -71,6 +71,18 @@ type Principal struct {
 	// AuthProvider is how a user signs in: storage.ProviderLocal (a password
 	// here) or a service such as Microsoft Entra.
 	AuthProvider string
+	// DisplayName is the name to show (a Microsoft account's display name),
+	// or empty; Name stays the unique account name.
+	DisplayName string
+}
+
+// Label is how the person is named in messages: "Justin Waters
+// (justin@fisni.com)" when they have a display name, else the account name.
+func (p *Principal) Label() string {
+	if p.DisplayName == "" || p.DisplayName == p.Name {
+		return p.Name
+	}
+	return p.DisplayName + " (" + p.Name + ")"
 }
 
 // Restricted reports whether the caller may only see some sources.
@@ -223,7 +235,7 @@ func (a *Authenticator) Authenticate(r *http.Request) (*Principal, error) {
 	if !a.sessionAllowed(r.Context(), u.Username, u.AuthProvider) {
 		return nil, ErrInvalid
 	}
-	return &Principal{Kind: KindUser, Name: u.Username, Role: u.Role, UserID: u.ID, Limited: u.Limited, Sources: u.Sources, AuthProvider: u.AuthProvider}, nil
+	return &Principal{Kind: KindUser, Name: u.Username, Role: u.Role, UserID: u.ID, Limited: u.Limited, Sources: u.Sources, AuthProvider: u.AuthProvider, DisplayName: u.DisplayName}, nil
 }
 
 // Require wraps next so only callers holding perm get through.

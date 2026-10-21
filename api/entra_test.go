@@ -1,10 +1,12 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
+	"siemlite/pkg/search"
 	"strconv"
 	"strings"
 	"testing"
@@ -258,7 +260,7 @@ func TestSignInWithMicrosoft(t *testing.T) {
 		}
 		e.call(root, "GET", "/api/v1/search?q=Microsoft&limit=20", nil, &ev, nil)
 		for _, x := range ev.Events {
-			found = found || strings.Contains(x.Message, "ann@example.com signed in with Microsoft")
+			found = found || strings.Contains(x.Message, "Test Person (ann@example.com) signed in with Microsoft")
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
@@ -508,5 +510,136 @@ func TestNewMemberNotYetInTheFilteredList(t *testing.T) {
 	e.get(br, "/api/v1/auth/entra/callback?code="+entratest.Code+"&state="+state)
 	if got := e.call(br, "GET", "/api/v1/me", nil, nil, nil); got != 200 || e.ms.Listed == 0 {
 		t.Errorf("a new member was refused (%d, listed %d)", got, e.ms.Listed)
+	}
+}
+
+// TestMicrosoftDisplayName: a Microsoft account shows its display name, keeps
+// its email as the unique account name, and follows a rename in Entra.
+func TestMicrosoftDisplayName(t *testing.T) {
+	ctx := context.Background()
+	e := newEnv(t)
+	e.user("root", auth.RoleAdmin)
+	root := e.client()
+	e.login(root, "root", password)
+	e.ms.Set(entratest.AccessGroup, annOID, true)
+	e.ms.Names = map[string]string{annOID: "Ann  Example\u202e"} // spaces and a direction override to tidy
+	if got := e.call(root, "PUT", "/api/v1/integrations/entra", entraForm(e), nil, nil); got != 200 {
+		t.Fatalf("save = %d", got)
+	}
+	br := e.browser()
+	authURL, state := e.startSSO(br)
+	e.ms.Expect(authURL, annOID, "Ann@Example.com")
+	e.get(br, "/api/v1/auth/entra/callback?code="+entratest.Code+"&state="+state)
+
+	var me struct {
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+	}
+	if got := e.call(br, "GET", "/api/v1/me", nil, &me, nil); got != 200 || me.Username != "ann@example.com" || me.DisplayName != "Ann Example" {
+		t.Fatalf("me = %d %+v", got, me)
+	}
+	var users []struct {
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+	}
+	e.call(root, "GET", "/api/v1/users", nil, &users, nil)
+	found := false
+	for _, u := range users {
+		found = found || (u.Username == "ann@example.com" && u.DisplayName == "Ann Example")
+	}
+	if !found {
+		t.Errorf("users = %+v", users)
+	}
+	// Audit messages name her by both; the actor stays the account name.
+	if err := e.worker.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var res search.Result
+	e.call(root, "GET", "/api/v1/search?q="+url.QueryEscape(`"signed in with Microsoft"`), nil, &res, nil)
+	if res.Count != 1 || !strings.Contains(res.Events[0].Message, "Ann Example (ann@example.com) signed in with Microsoft") {
+		t.Errorf("audit = %d %+v", res.Count, res.Events)
+	}
+
+	// Renamed in Entra: the group check updates the name.
+	e.ms.Names[annOID] = "Ann Renamed"
+	if got := e.call(root, "POST", "/api/v1/integrations/entra/sync", nil, nil, nil); got != 200 {
+		t.Fatalf("sync = %d", got)
+	}
+	if e.call(br, "GET", "/api/v1/me", nil, &me, nil); me.DisplayName != "Ann Renamed" || me.Username != "ann@example.com" {
+		t.Errorf("after rename = %+v", me)
+	}
+	// Any other message that starts with her account name gets her display name too.
+	if got := e.call(br, "POST", "/api/v1/logout", nil, nil, nil); got != 200 {
+		t.Fatalf("logout = %d", got)
+	}
+	if err := e.worker.Drain(ctx); err != nil {
+		t.Fatal(err)
+	}
+	e.call(root, "GET", "/api/v1/search?q="+url.QueryEscape(`"signed out"`), nil, &res, nil)
+	if res.Count != 1 || res.Events[0].Message != "Ann Renamed (ann@example.com) signed out" {
+		t.Errorf("sign-out audit = %d %+v", res.Count, res.Events)
+	}
+}
+
+// TestDisplayNameCantPassForAnotherAccount: a display name is free text in
+// Entra, so one that could be taken for another account isn't shown; the
+// account's email is shown instead.
+func TestDisplayNameCantPassForAnotherAccount(t *testing.T) {
+	e := newEnv(t)
+	e.user("root", auth.RoleAdmin)
+	e.user("admin", auth.RoleAdmin)
+	root := e.client()
+	e.login(root, "root", password)
+	e.ms.Set(entratest.AccessGroup, annOID, true)
+	e.ms.Set(entratest.AccessGroup, caraOID, true)
+	e.ms.Names = map[string]string{annOID: "Pat Smith", caraOID: "Cara Jones"}
+	if got := e.call(root, "PUT", "/api/v1/integrations/entra", entraForm(e), nil, nil); got != 200 {
+		t.Fatalf("save = %d", got)
+	}
+	signIn := func(oid, upn string) string {
+		br := e.browser()
+		authURL, state := e.startSSO(br)
+		e.ms.Expect(authURL, oid, upn)
+		e.get(br, "/api/v1/auth/entra/callback?code="+entratest.Code+"&state="+state)
+		var me struct {
+			Username    string `json:"username"`
+			DisplayName string `json:"display_name"`
+		}
+		if got := e.call(br, "GET", "/api/v1/me", nil, &me, nil); got != 200 || me.Username != upn {
+			t.Fatalf("%s: me = %d %+v", upn, got, me)
+		}
+		return me.DisplayName
+	}
+	if got := signIn(annOID, "ann@example.com"); got != "Pat Smith" {
+		t.Fatalf("an ordinary name = %q", got)
+	}
+	for _, name := range []string{
+		"ADMIN",                            // a local account's username
+		"Pat Smith",                        // another person's display name
+		"ann@example.com",                  // another account's email
+		"Justin Waters (justin@fisni.com)", // shaped like "Name (account)"
+		"root ",                            // tidied, then a username
+	} {
+		e.ms.Names[caraOID] = name
+		if got := signIn(caraOID, "cara@example.com"); got != "" {
+			t.Errorf("%q was shown as %q", name, got)
+		}
+	}
+	// The membership check applies the same rule.
+	e.ms.Names[caraOID] = "Cara Jones"
+	signIn(caraOID, "cara@example.com")
+	e.ms.Names[caraOID] = "Pat Smith"
+	if got := e.call(root, "POST", "/api/v1/integrations/entra/sync", nil, nil, nil); got != 200 {
+		t.Fatalf("sync = %d", got)
+	}
+	var users []struct {
+		Username    string `json:"username"`
+		DisplayName string `json:"display_name"`
+	}
+	e.call(root, "GET", "/api/v1/users", nil, &users, nil)
+	for _, u := range users {
+		if u.Username == "cara@example.com" && u.DisplayName != "" {
+			t.Errorf("after the check, cara shows as %q", u.DisplayName)
+		}
 	}
 }

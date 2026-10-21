@@ -114,6 +114,7 @@
   .account { display: flex; align-items: center; gap: 10px; padding: 8px 10px; margin-top: 4px; border-radius: 6px;
              color: var(--ink); text-decoration: none; box-shadow: 0 -12px 0 -11px var(--rule); }
   .account:hover, .account[aria-current="page"] { background: var(--raised); }
+  .user-sub { font-size: 13px; }
   .account b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
   .avatar { flex: none; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; background: var(--ink); color: var(--paper);
             font-size: 12.5px; font-weight: 700; text-transform: uppercase; }
@@ -1554,8 +1555,10 @@ function applySession(s) {
   isAdmin = s.role === "admin";
   $("ver").textContent = s.version || "";
   for (const n of document.querySelectorAll(".alerts-nav")) n.hidden = !!s.limited;
-  $("who-name").textContent = s.username;
-  $("who-initial").textContent = (s.username || "?").trim().charAt(0);
+  // A Microsoft account shows its display name; the username stays its unique name.
+  $("who-name").textContent = s.display_name || s.username;
+  $("who-name").title = s.display_name ? s.username : "";
+  $("who-initial").textContent = (s.display_name || s.username || "?").trim().charAt(0);
   for (const n of document.querySelectorAll(".admin-only")) n.hidden = !isAdmin;
 }
 $("login-form").onsubmit = async (e) => {
@@ -2048,7 +2051,8 @@ async function openAccount() {
   $("acct-pw-user").value = me.username;
   for (const id of ["acct-pw-current", "acct-pw-new", "acct-pw-again"]) $(id).value = "";
   notice($("acct-pw-msg"), "");
-  $("account-sub").textContent = `Signed in as ${me.username}.`;
+  $("account-sub").textContent = me.display_name && me.display_name !== me.username
+    ? `Signed in as ${me.display_name} (${me.username}).` : `Signed in as ${me.username}.`;
   $("acct-role").textContent = me.role === "admin" ? "Admin" : "Standard";
   $("acct-role").classList.toggle("on", me.role === "admin");
   let text = me.role === "admin" ? "Everything, including users, sources, parsers, integrations and system settings." :
@@ -2093,9 +2097,10 @@ async function openUsers() {
     usersCache = users;
     const name = (id) => (sourcesCache.find((s) => s.id === id) || {}).name || `Source ${id}`;
     $("users-body").replaceChildren(...users.map((u) => el("tr", {},
-      el("td", {}, el("b", { textContent: u.username }), u.username === me.username ? el("span", { className: "muted", textContent: " (you)" }) : "",
+      el("td", {}, el("b", { textContent: u.display_name || u.username }), u.username === me.username ? el("span", { className: "muted", textContent: " (you)" }) : "",
         u.auth_provider === "entra" ? el("span", { className: "pill", style: "margin-left:8px", textContent: "Microsoft", title: "Signs in with a Microsoft account, so it has no password here" }) : "",
-        u.disabled ? el("span", { className: "pill", style: "margin-left:6px", textContent: "Switched off", title: "No longer in the Entra access group, so it can't sign in" }) : ""),
+        u.disabled ? el("span", { className: "pill", style: "margin-left:6px", textContent: "Switched off", title: "No longer in the Entra access group, so it can't sign in" }) : "",
+        u.display_name && u.display_name !== u.username ? el("div", { className: "muted user-sub", textContent: u.username }) : ""),
       el("td", { textContent: u.role === "admin" ? "Admin" : "Standard" }),
       el("td", { className: u.limited ? "" : "muted", textContent: u.role === "admin" || !u.limited ? "Every source" : (u.sources.map(name).join(", ") || "No sources") }),
       el("td", { className: "muted", textContent: shortDate(u.created_at) }),

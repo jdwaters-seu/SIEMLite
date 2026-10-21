@@ -588,6 +588,19 @@ func (s *Service) CompleteLogin(ctx context.Context, code, state, flowCookie str
 			return nil, failed("read the account: %v", err)
 		}
 	}
+	// The name to show follows Microsoft's display name.
+	all, err := s.repo.ListUsers(ctx)
+	if err != nil {
+		s.log.Warn("couldn't check a single sign-on user's name", "user", u.Username, "err", err)
+		return u, nil
+	}
+	if name := ShowableName(c.Name, *u, all); name != u.DisplayName {
+		if err := s.repo.SetDisplayName(ctx, u.ID, name); err != nil {
+			s.log.Warn("couldn't update a single sign-on user's name", "user", u.Username, "err", err)
+		} else {
+			u.DisplayName = name
+		}
+	}
 	return u, nil
 }
 
@@ -633,14 +646,14 @@ func (s *Service) Sync(ctx context.Context) (SyncStatus, error) {
 	if err != nil {
 		return finish(err)
 	}
-	admins := map[string]bool{}
+	admins := map[string]member{}
 	if st.AdminGroupID != "" {
 		if admins, err = s.members(ctx, tok, st.AdminGroupID); err != nil {
 			return finish(err)
 		}
 	}
-	for _, ok := range access {
-		if ok {
+	for _, m := range access {
+		if m.Enabled {
 			stat.Members++
 		}
 	}
@@ -649,8 +662,27 @@ func (s *Service) Sync(ctx context.Context) (SyncStatus, error) {
 		return finish(err)
 	}
 	stat.Accounts = len(users)
+	all, err := s.repo.ListUsers(ctx) // every account, for display-name clashes
+	if err != nil {
+		s.log.Warn("couldn't read the accounts to check display names", "err", err)
+		all = nil
+	}
 	for _, u := range users {
-		allowed := access[u.ExternalID]
+		m, in := access[u.ExternalID]
+		allowed := in && m.Enabled
+		if allowed && m.Name != "" && all != nil { // the name follows Entra
+			if name := ShowableName(m.Name, u, all); name != u.DisplayName {
+				if err := s.repo.SetDisplayName(ctx, u.ID, name); err != nil {
+					s.log.Warn("couldn't update a single sign-on user's name", "user", u.Username, "err", err)
+				} else {
+					for i := range all {
+						if all[i].ID == u.ID {
+							all[i].DisplayName = name
+						}
+					}
+				}
+			}
+		}
 		switch {
 		case !allowed && !u.Disabled:
 			if err := s.repo.SetUserDisabled(ctx, u.ID, true); err != nil {
@@ -674,7 +706,7 @@ func (s *Service) Sync(ctx context.Context) (SyncStatus, error) {
 		}
 		if allowed && st.AdminGroupID != "" {
 			want := "standard"
-			if admins[u.ExternalID] {
+			if admins[u.ExternalID].Enabled {
 				want = "admin"
 			}
 			if u.Role != want {

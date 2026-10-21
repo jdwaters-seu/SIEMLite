@@ -226,12 +226,17 @@ func (s *Service) groupName(ctx context.Context, token, groupID string) (string,
 
 const maxMemberPages = 200
 
-// members returns the people in a group, nested groups included, mapped to
-// whether their Microsoft account is enabled. An error means the list is
-// incomplete and must not be acted on.
-func (s *Service) members(ctx context.Context, token, groupID string) (map[string]bool, error) {
-	out := map[string]bool{}
-	next := "/groups/" + groupID + "/transitiveMembers/microsoft.graph.user?$select=id,accountEnabled&$top=999"
+// member is a person in a group.
+type member struct {
+	Enabled bool   // their Microsoft account is enabled
+	Name    string // their display name
+}
+
+// members returns the people in a group, nested groups included, by object
+// ID. An error means the list is incomplete and must not be acted on.
+func (s *Service) members(ctx context.Context, token, groupID string) (map[string]member, error) {
+	out := map[string]member{}
+	next := "/groups/" + groupID + "/transitiveMembers/microsoft.graph.user?$select=id,accountEnabled,displayName&$top=999"
 	for page := 0; next != ""; page++ {
 		if page >= maxMemberPages {
 			return nil, errors.New("the group has too many members to read")
@@ -240,6 +245,7 @@ func (s *Service) members(ctx context.Context, token, groupID string) (map[strin
 			Value []struct {
 				ID      string `json:"id"`
 				Enabled *bool  `json:"accountEnabled"`
+				Name    string `json:"displayName"`
 			} `json:"value"`
 			Next string `json:"@odata.nextLink"`
 		}
@@ -247,7 +253,7 @@ func (s *Service) members(ctx context.Context, token, groupID string) (map[strin
 			return nil, err
 		}
 		for _, m := range res.Value {
-			out[strings.ToLower(m.ID)] = m.Enabled == nil || *m.Enabled
+			out[strings.ToLower(m.ID)] = member{Enabled: m.Enabled == nil || *m.Enabled, Name: CleanName(m.Name)}
 		}
 		next = res.Next
 	}
