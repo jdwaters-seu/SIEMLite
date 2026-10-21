@@ -106,7 +106,7 @@ func TestOllamaAddressIsChecked(t *testing.T) {
 	} else if _, ok := err.(InputError); !ok {
 		t.Errorf("Test error = %v", err)
 	}
-	if err := s.Save(ctx, Settings{Provider: ProviderLocal, OllamaURL: "http://169.254.169.254", LocalModel: "m"}, nil); err == nil {
+	if err := s.Save(ctx, Settings{Provider: ProviderLocal, OllamaURL: "http://169.254.169.254", LocalModel: "m"}, "", nil); err == nil {
 		t.Error("saved a metadata address")
 	}
 	// Even a name that leads there is refused when connecting.

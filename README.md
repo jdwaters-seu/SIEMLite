@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.21` in `.env` to use it, or leave it out to build from the
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.22` in `.env` to use it, or leave it out to build from the
 checkout. Either way, start and update with `./update.sh`:
 
 ```sh
@@ -257,7 +257,7 @@ the raw text.
 | `GET /api/v1/auth/providers`, `GET /api/v1/auth/entra/start`, `GET /api/v1/auth/entra/callback` | public | The sign-in page's "Continue with Microsoft": which buttons to show, where the browser is sent to sign in, and where Microsoft sends it back. Not for scripts. |
 | `GET`/`POST /api/v1/backups`, `PUT /api/v1/backups/settings`, `POST /api/v1/backups/upload` | admin | List backups and the job status, start a backup, set the schedule (`{"interval_hours": 0/6/24/168, "keep"}`), upload a backup file. |
 | `GET`/`DELETE /api/v1/backups/{name}`, `POST /api/v1/backups/{name}/restore` | admin | Download or delete a backup; restore it (SIEMLite restarts). |
-| `GET`/`PUT /api/v1/integrations/ai`, `POST /api/v1/integrations/ai/test`, `GET /api/v1/integrations/ai/cloud-models` | admin | The [AI Parsers](#ai-parsers) settings (`{"provider": "local"/"openrouter", "ollama_url", "local_model", "cloud_model", "send_addresses", "openrouter_key"}`; the key is write-only, leaving it out keeps the saved one and `""` removes it), with this server's hardware, the recommended model and the download's progress; a connection test (the same fields); and OpenRouter's models that can answer in a JSON shape. |
+| `GET`/`PUT /api/v1/integrations/ai`, `POST /api/v1/integrations/ai/test`, `GET /api/v1/integrations/ai/cloud-models` | admin | The [AI Parsers](#ai-parsers) settings (`{"provider": "local"/"openrouter"/"anthropic"/"google"/"openai"/"nvidia", "ollama_url", "local_model", "cloud_model", "send_addresses", "api_key", "key_for"}`; `api_key` is write-only and is for the service `key_for` (or `provider`): leaving it out keeps the saved one and `""` removes it; `openrouter_key` from v0.19 still works), with this server's hardware, the recommended model and the download's progress; a connection test (the same fields); and a service's models with the ones recommended (`GET ?provider=` uses the saved key, `POST {"provider", "api_key"}` the one given). |
 | `POST /api/v1/parsers/test`, `POST /api/v1/parsers/suggest` | admin | Run a parser over `{"definition", "lines"}`; ask the AI model for a parser for `{"lines"}`. |
 | `POST /api/v1/login`, `POST /api/v1/logout`, `GET /api/v1/me` | | Browser sign-in, sign-out and current session (`/me` includes `auth_provider`: `local` or `entra`, and `display_name` for a Microsoft account). A password sign-in refused by a [sign-in restriction](#sign-in-restrictions) gets `403`. |
 | `GET`/`PUT /api/v1/system/signin` | admin | The [sign-in restrictions](#sign-in-restrictions): `{"admin_local_only", "entra_only"}` (send either). The answer also says what is enforced now, the local port, and whether the request came in on it. Turning either on is refused without a local port; Microsoft-only also needs sign-in with Microsoft on and a local Admin account named `admin`. |
@@ -325,17 +325,26 @@ Set it up on the **Integrations** page, choosing where the model runs:
   With Docker, start Ollama by adding `ai` to `COMPOSE_PROFILES` in `.env` and running `docker compose up -d`; its address is
   `http://ollama:11434`. Without Docker, run Ollama yourself (`http://localhost:11434`). On a CPU, the medium model
   (`qwen2.5-coder:3b`) takes about 10-40 seconds per suggestion. Any Ollama model that can answer in a JSON shape can be used.
-- **In the cloud**, with [OpenRouter](https://openrouter.ai) and your API key (from [openrouter.ai/keys](https://openrouter.ai/keys)).
-  Choose a model: the recommended ones are small, fast and inexpensive, and the full list shows every model that can answer
-  in a JSON shape, with its price. The sample lines you ask about are sent to OpenRouter and the model's provider, so:
+- **In the cloud**, with your API key for one of these services:
+  - [OpenRouter](https://openrouter.ai) (keys at [openrouter.ai/keys](https://openrouter.ai/keys)): hundreds of models from many
+    companies, with prices shown. SIEMLite asks OpenRouter to use only companies that don't keep or train on what they're sent.
+  - [Anthropic](https://www.anthropic.com) (keys at [console.anthropic.com](https://console.anthropic.com/settings/keys)): Claude.
+  - [Google Gemini](https://ai.google.dev) (keys at [aistudio.google.com](https://aistudio.google.com/apikey)). With a free key,
+    Google may use what is sent to improve its products; a key on a paid (billing) project doesn't.
+  - [OpenAI](https://platform.openai.com) (keys at [platform.openai.com](https://platform.openai.com/api-keys)).
+  - [NVIDIA](https://build.nvidia.com) (keys at [build.nvidia.com](https://build.nvidia.com/settings/api-keys)): NVIDIA's hosted
+    open models, such as Llama and Nemotron.
+
+  Choose the service and a model: the card reads the service's own model list with your key and recommends small, fast and
+  inexpensive ones. Each service keeps its own key and model, so you can switch between them without entering them again.
+  The sample lines you ask about are sent to the service, so:
   - IP, email and MAC addresses and host names are replaced before sending (on unless you turn it off). Every dotted name
     counts as a host name, including file and field names such as `index.html` or `actor.ip`, so nothing slips through on an
     unusual domain; this can make field mapping for JSON with dotted field names less precise. The stand-ins keep the lines'
     shape, and the answer is changed back, so the parser fits the real lines. Other text, such as user names, is sent as written.
   - Before anything is sent, SIEMLite checks the exact text: if an address, or part of one, is still there, nothing is sent
     and you are asked to remove it from the samples or use a model on this server.
-  - SIEMLite asks OpenRouter to use only providers that don't keep or train on what they're sent.
-  - The key is encrypted like the [email](#email) password and never shown again.
+  - The keys are encrypted like the [email](#email) password and never shown again.
 
 Turning the integration off hides the button; its settings are kept. Asking for a suggestion is recorded in the
 [audit log](#audit-log) (`parser.suggest`), and so are changes to the settings (`system.ai.save`). Before v0.19 this was

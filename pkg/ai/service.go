@@ -28,7 +28,9 @@ var RecommendedCloud = []string{"~anthropic/claude-haiku-latest", "~google/gemin
 
 const settingKey = "ai"
 
-// Settings are the AI Parsers settings, without the OpenRouter key.
+// Settings are the AI Parsers settings, without API keys. Provider is
+// ProviderLocal or a cloud service's ID; CloudModel is the model for that
+// service (each service's choice is kept).
 type Settings struct {
 	Provider   string `json:"provider"`
 	OllamaURL  string `json:"ollama_url"`
@@ -41,8 +43,45 @@ type Settings struct {
 
 type stored struct {
 	Settings
-	Key      string `json:"key,omitempty"` // sealed
-	Disabled bool   `json:"disabled,omitempty"`
+	Key      string            `json:"key,omitempty"`    // sealed; OpenRouter's, before v0.22 (moved to Keys)
+	Keys     map[string]string `json:"keys,omitempty"`   // cloud service -> sealed API key
+	Models   map[string]string `json:"models,omitempty"` // cloud service -> chosen model
+	Disabled bool              `json:"disabled,omitempty"`
+}
+
+// normalize moves settings saved before v0.22 into the per-service maps,
+// and sets CloudModel to the chosen service's model.
+func (st *stored) normalize() {
+	if st.Keys == nil {
+		st.Keys = map[string]string{}
+	}
+	if st.Models == nil {
+		st.Models = map[string]string{}
+	}
+	if st.Key != "" {
+		if st.Keys[ProviderCloud] == "" {
+			st.Keys[ProviderCloud] = st.Key
+		}
+		st.Key = ""
+	}
+	if IsCloud(st.Provider) {
+		if st.Models[st.Provider] == "" && st.CloudModel != "" {
+			st.Models[st.Provider] = st.CloudModel
+		}
+		st.CloudModel = st.Models[st.Provider]
+	}
+}
+
+func (st stored) copyMaps() stored {
+	keys, models := map[string]string{}, map[string]string{}
+	for k, v := range st.Keys {
+		keys[k] = v
+	}
+	for k, v := range st.Models {
+		models[k] = v
+	}
+	st.Keys, st.Models = keys, models
+	return st
 }
 
 // Defaults come from the command line (-ai-url, -ai-model). With a URL they
@@ -80,8 +119,10 @@ type PullStatus struct {
 
 // Service is the AI Parsers integration.
 type Service struct {
-	// OpenRouterURL is OpenRouter's API; tests point it elsewhere.
+	// OpenRouterURL is OpenRouter's API, and CloudURLs the other services'
+	// (by ID); tests point them elsewhere.
 	OpenRouterURL string
+	CloudURLs     map[string]string
 
 	store Store
 	box   *secret.Box
@@ -128,6 +169,7 @@ func (s *Service) load(ctx context.Context) (stored, error) {
 	case s.def.OllamaURL != "":
 		st.Settings = Settings{Provider: ProviderLocal, OllamaURL: s.def.OllamaURL, LocalModel: s.def.Model}
 	}
+	st.normalize()
 	s.mu.Lock()
 	s.cur, s.loaded = st, true
 	s.mu.Unlock()
@@ -148,17 +190,44 @@ func configured(st stored) bool {
 	switch st.Provider {
 	case ProviderLocal:
 		return st.OllamaURL != "" && st.LocalModel != ""
-	case ProviderCloud:
-		return st.Key != "" && st.CloudModel != ""
+	}
+	if IsCloud(st.Provider) {
+		return st.Keys[st.Provider] != "" && st.Models[st.Provider] != ""
 	}
 	return false
 }
 
 func (s *Service) model(st stored) string {
-	if st.Provider == ProviderCloud {
-		return st.CloudModel
+	if IsCloud(st.Provider) {
+		return st.Models[st.Provider]
 	}
 	return st.LocalModel
+}
+
+// baseURL is where a cloud service's API is; tests point it elsewhere.
+func (s *Service) baseURL(svc CloudService) string {
+	if svc.ID == ProviderCloud && s.OpenRouterURL != "" {
+		return s.OpenRouterURL
+	}
+	if u := s.CloudURLs[svc.ID]; u != "" {
+		return u
+	}
+	return svc.base
+}
+
+// chatter is the model a cloud service runs, with the given key and model.
+func (s *Service) cloudChatter(svc CloudService, key, model string) chatter {
+	base := s.baseURL(svc)
+	switch svc.ID {
+	case ProviderCloud:
+		return &openRouter{base: base, key: key, model: model, http: s.http}
+	case ProviderAnthropic:
+		return &anthropic{base: base, key: key, model: model, http: s.http}
+	case ProviderGoogle:
+		return &gemini{base: base, key: key, model: model, http: s.http}
+	default: // OpenAI and NVIDIA
+		return &openAICompat{service: svc.Name, base: base, key: key, model: model, http: s.http}
+	}
 }
 
 // defaultOllamaURL is where Ollama usually is: the compose service, or this machine.
@@ -183,17 +252,21 @@ type OllamaState struct {
 // View is the Integrations card. The key is never included.
 type View struct {
 	Settings
-	Configured     bool         `json:"configured"`
-	Enabled        bool         `json:"enabled"`
-	Ready          bool         `json:"ready"`
-	HasKey         bool         `json:"has_key"`
-	KeyUnreadable  bool         `json:"key_unreadable,omitempty"`
-	Hardware       Hardware     `json:"hardware"`
-	Recommended    string       `json:"recommended"`
-	Catalog        []Catalog    `json:"catalog"`
-	CloudSuggested []string     `json:"cloud_recommended"`
-	Ollama         *OllamaState `json:"ollama,omitempty"`
-	Pull           *PullStatus  `json:"pull,omitempty"`
+	Configured     bool      `json:"configured"`
+	Enabled        bool      `json:"enabled"`
+	Ready          bool      `json:"ready"`
+	HasKey         bool      `json:"has_key"`
+	KeyUnreadable  bool      `json:"key_unreadable,omitempty"`
+	Hardware       Hardware  `json:"hardware"`
+	Recommended    string    `json:"recommended"`
+	Catalog        []Catalog `json:"catalog"`
+	CloudSuggested []string  `json:"cloud_recommended"`
+	// Services are the cloud services; HasKeys and Models what is saved for each.
+	Services []CloudService    `json:"services"`
+	HasKeys  map[string]bool   `json:"has_keys"`
+	Models   map[string]string `json:"models"`
+	Ollama   *OllamaState      `json:"ollama,omitempty"`
+	Pull     *PullStatus       `json:"pull,omitempty"`
 }
 
 // Get returns the settings, with Ollama's state when it runs on this server.
@@ -202,10 +275,18 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 	if err != nil {
 		return View{}, err
 	}
-	v := View{Settings: st.Settings, Configured: configured(st), HasKey: st.Key != "", Catalog: LocalCatalog, CloudSuggested: RecommendedCloud}
+	v := View{Settings: st.Settings, Configured: configured(st), Catalog: LocalCatalog, CloudSuggested: RecommendedCloud,
+		Services: CloudServices, HasKeys: map[string]bool{}, Models: map[string]string{}}
 	v.Enabled = v.Configured && !st.Disabled
-	if st.Key != "" {
-		if _, err := s.box.Open(st.Key); err != nil {
+	for id, k := range st.Keys {
+		v.HasKeys[id] = k != ""
+	}
+	for id, m := range st.Models {
+		v.Models[id] = m
+	}
+	if k := st.Keys[st.Provider]; k != "" {
+		v.HasKey = true
+		if _, err := s.box.Open(k); err != nil {
 			v.KeyUnreadable = true
 		}
 	}
@@ -215,10 +296,10 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 			v.OllamaURL = defaultOllamaURL()
 		}
 	}
-	if v.CloudModel == "" {
+	if v.CloudModel == "" && v.Provider == "" {
 		v.CloudModel = RecommendedCloud[0]
 	}
-	if v.Provider != ProviderCloud && CheckOllamaURL(v.OllamaURL) == nil {
+	if !IsCloud(v.Provider) && CheckOllamaURL(v.OllamaURL) == nil {
 		o := newOllama(v.OllamaURL, "")
 		qctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		models, err := o.models(qctx)
@@ -251,9 +332,10 @@ func (s *Service) Get(ctx context.Context) (View, error) {
 }
 
 func (s *Service) readyLocked(st stored) bool {
+	if IsCloud(st.Provider) {
+		return st.Keys[st.Provider] != ""
+	}
 	switch st.Provider {
-	case ProviderCloud:
-		return st.Key != ""
 	case ProviderLocal:
 		return s.readyAt == st.OllamaURL+"|"+st.LocalModel
 	}
@@ -275,45 +357,56 @@ var (
 	cloudModelRe = regexp.MustCompile(`^~?[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,119}$`)
 )
 
-// Save stores the settings. key nil keeps the saved OpenRouter key; "" removes it.
-func (s *Service) Save(ctx context.Context, in Settings, key *string) error {
+// Save stores the settings. key is for the cloud service keyFor (the chosen
+// provider when empty): nil keeps the saved key, "" removes it.
+func (s *Service) Save(ctx context.Context, in Settings, keyFor string, key *string) error {
 	in.OllamaURL = strings.TrimRight(strings.TrimSpace(in.OllamaURL), "/")
 	in.LocalModel, in.CloudModel = strings.TrimSpace(in.LocalModel), strings.TrimSpace(in.CloudModel)
 	old, err := s.load(ctx)
 	if err != nil {
 		return err
 	}
-	next := stored{Settings: in, Key: old.Key, Disabled: old.Disabled}
+	next := old.copyMaps()
+	next.Settings = in
+	if keyFor == "" {
+		keyFor = in.Provider
+	}
 	if key != nil {
+		svc, ok := cloudService(keyFor)
+		if !ok {
+			return InputError("Choose which cloud service the API key is for.")
+		}
 		k := strings.TrimSpace(*key)
 		switch {
 		case k == "":
-			next.Key = ""
+			delete(next.Keys, keyFor)
 		case len(k) > 512 || strings.ContainsAny(k, " \t\r\n"):
-			return InputError("That doesn't look like an OpenRouter API key.")
+			return InputError("That doesn't look like a " + svc.Name + " API key.")
 		default:
-			if next.Key, err = s.box.Seal(k); err != nil {
+			if next.Keys[keyFor], err = s.box.Seal(k); err != nil {
 				return err
 			}
 		}
 	}
-	switch in.Provider {
-	case ProviderLocal:
+	switch {
+	case in.Provider == ProviderLocal:
 		if err := CheckOllamaURL(in.OllamaURL); err != nil {
 			return InputError(capitalize(err.Error()) + ".")
 		}
 		if !localModelRe.MatchString(in.LocalModel) {
 			return InputError("Choose a model, or enter an Ollama model name such as qwen2.5-coder:3b.")
 		}
-	case ProviderCloud:
+	case IsCloud(in.Provider):
+		svc, _ := cloudService(in.Provider)
 		if !cloudModelRe.MatchString(in.CloudModel) {
-			return InputError("Choose a model, or enter an OpenRouter model ID such as " + RecommendedCloud[0] + ".")
+			return InputError("Choose a " + svc.Name + " model, or enter its model ID.")
 		}
-		if next.Key == "" {
-			return InputError("Enter your OpenRouter API key (from openrouter.ai/keys).")
+		if next.Keys[in.Provider] == "" {
+			return InputError("Enter your " + svc.Name + " API key (from " + strings.TrimPrefix(svc.KeyURL, "https://") + ").")
 		}
+		next.Models[in.Provider] = in.CloudModel
 	default:
-		return InputError("Choose where the model runs: on this server, or in the cloud with OpenRouter.")
+		return InputError("Choose where the model runs: on this server, or with a cloud service.")
 	}
 	b, err := json.Marshal(next)
 	if err != nil {
@@ -322,6 +415,7 @@ func (s *Service) Save(ctx context.Context, in Settings, key *string) error {
 	if err := s.store.SetSetting(ctx, settingKey, string(b)); err != nil {
 		return err
 	}
+	next.normalize()
 	s.mu.Lock()
 	s.cur, s.loaded = next, true
 	s.mu.Unlock()
@@ -362,9 +456,9 @@ func (s *Service) Info(ctx context.Context) (integrations.Info, error) {
 	s.mu.Lock()
 	ready, pull := s.readyLocked(st), s.pull
 	s.mu.Unlock()
-	switch st.Provider {
-	case ProviderCloud:
-		info.Summary = "In the cloud with OpenRouter: " + st.CloudModel + "."
+	switch svc, cloud := cloudService(st.Provider); {
+	case cloud:
+		info.Summary = "In the cloud with " + svc.Name + ": " + st.CloudModel + "."
 	default:
 		info.Summary = "On this server with Ollama: " + st.LocalModel + "."
 		if info.Enabled && !ready {
@@ -552,13 +646,13 @@ func (s *Service) Suggest(ctx context.Context, lines []string) (*Suggestion, err
 		return nil, ErrOff
 	}
 	var ch chatter
-	switch st.Provider {
-	case ProviderCloud:
-		key, err := s.box.Open(st.Key)
+	switch svc, cloud := cloudService(st.Provider); {
+	case cloud:
+		key, err := s.box.Open(st.Keys[svc.ID])
 		if err != nil {
-			return nil, InputError("The saved OpenRouter key can't be read on this server; enter it again on the Integrations page.")
+			return nil, InputError("The saved " + svc.Name + " key can't be read on this server; enter it again on the Integrations page.")
 		}
-		ch = &openRouter{base: s.OpenRouterURL, key: key, model: st.CloudModel, http: s.http}
+		ch = s.cloudChatter(svc, key, st.Models[svc.ID])
 		if !st.SendAddresses {
 			ch = newMasker(ch)
 		}
@@ -601,61 +695,96 @@ func (s *Service) Test(ctx context.Context, in Settings, key *string) (TestResul
 			return TestResult{}, fmt.Errorf("couldn't reach Ollama at %s: %s", in.OllamaURL, shortErr(err))
 		}
 		return TestResult{Provider: in.Provider, Installed: models, HasModel: hasModel(models, strings.TrimSpace(in.LocalModel))}, nil
-	case ProviderCloud:
-		k := ""
-		if key != nil {
-			k = strings.TrimSpace(*key)
-		}
-		if k == "" {
-			st, err := s.load(ctx)
-			if err != nil {
-				return TestResult{}, err
-			}
-			if st.Key == "" {
-				return TestResult{}, InputError("Enter your OpenRouter API key (from openrouter.ai/keys).")
-			}
-			if k, err = s.box.Open(st.Key); err != nil {
-				return TestResult{}, InputError("The saved OpenRouter key can't be read on this server; enter it again.")
-			}
-		}
-		o := &openRouter{base: s.OpenRouterURL, key: k, http: &http.Client{Timeout: 20 * time.Second}}
+	}
+	svc, ok := cloudService(in.Provider)
+	if !ok {
+		return TestResult{}, InputError("Choose where the model runs: on this server, or with a cloud service.")
+	}
+	k, err := s.keyFor(ctx, svc, key)
+	if err != nil {
+		return TestResult{}, err
+	}
+	r := TestResult{Provider: in.Provider}
+	if svc.ID == ProviderCloud {
+		o := &openRouter{base: s.baseURL(svc), key: k, http: &http.Client{Timeout: 20 * time.Second}}
 		label, left, err := o.keyInfo(ctx)
 		if err != nil {
 			return TestResult{}, err
 		}
-		r := TestResult{Provider: in.Provider, KeyLabel: label, CreditLeft: left}
-		if models, err := s.CloudModels(ctx); err == nil {
-			known := false
-			for _, m := range models {
-				known = known || m.ID == strings.TrimSpace(in.CloudModel)
-			}
-			r.ModelKnown = &known
-		}
-		return r, nil
+		r.KeyLabel, r.CreditLeft = label, left
 	}
-	return TestResult{}, InputError("Choose where the model runs: on this server, or in the cloud with OpenRouter.")
+	// Reading the model list checks the key (OpenRouter's list is public).
+	models, _, err := s.CloudModels(ctx, svc.ID, &k)
+	if err != nil {
+		if svc.ID == ProviderCloud {
+			return r, nil
+		}
+		return TestResult{}, err
+	}
+	known := false
+	for _, m := range models {
+		known = known || m.ID == strings.TrimSpace(in.CloudModel)
+	}
+	r.ModelKnown = &known
+	return r, nil
 }
 
-// CloudModels lists OpenRouter's models that can answer in a JSON shape,
-// fetched at most once an hour.
-func (s *Service) CloudModels(ctx context.Context) ([]CloudModel, error) {
-	s.mu.Lock()
-	if s.cloud != nil && time.Since(s.cloudAt) < time.Hour {
-		c := s.cloud
-		s.mu.Unlock()
-		return c, nil
+// keyFor is the key typed in the form, or else the one saved for the service.
+func (s *Service) keyFor(ctx context.Context, svc CloudService, typed *string) (string, error) {
+	if typed != nil && strings.TrimSpace(*typed) != "" {
+		return strings.TrimSpace(*typed), nil
 	}
-	s.mu.Unlock()
+	st, err := s.load(ctx)
+	if err != nil {
+		return "", err
+	}
+	sealed := st.Keys[svc.ID]
+	if sealed == "" {
+		return "", InputError("Enter your " + svc.Name + " API key (from " + strings.TrimPrefix(svc.KeyURL, "https://") + ").")
+	}
+	k, err := s.box.Open(sealed)
+	if err != nil {
+		return "", InputError("The saved " + svc.Name + " key can't be read on this server; enter it again.")
+	}
+	return k, nil
+}
+
+// CloudModels lists a cloud service's models (with the key typed, or the
+// saved one; OpenRouter's list needs none and is kept for an hour) and the
+// ones recommended from them.
+func (s *Service) CloudModels(ctx context.Context, provider string, key *string) ([]CloudModel, []string, error) {
+	svc, ok := cloudService(provider)
+	if !ok {
+		return nil, nil, InputError("There's no cloud service called " + provider + ".")
+	}
+	if svc.ID == ProviderCloud {
+		s.mu.Lock()
+		if s.cloud != nil && time.Since(s.cloudAt) < time.Hour {
+			c := s.cloud
+			s.mu.Unlock()
+			return c, recommended(svc, c), nil
+		}
+		s.mu.Unlock()
+	}
+	k := ""
+	if svc.ID != ProviderCloud {
+		var err error
+		if k, err = s.keyFor(ctx, svc, key); err != nil {
+			return nil, nil, err
+		}
+	}
 	qctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
-	models, err := cloudModels(qctx, s.http, s.OpenRouterURL)
+	models, err := listModels(qctx, s.http, svc, s.baseURL(svc), k)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	s.mu.Lock()
-	s.cloud, s.cloudAt = models, time.Now()
-	s.mu.Unlock()
-	return models, nil
+	if svc.ID == ProviderCloud {
+		s.mu.Lock()
+		s.cloud, s.cloudAt = models, time.Now()
+		s.mu.Unlock()
+	}
+	return models, recommended(svc, models), nil
 }
 
 func capitalize(s string) string {
