@@ -136,14 +136,14 @@ func TestLocalModelDownloadsAndSuggests(t *testing.T) {
 		{Provider: ProviderLocal, OllamaURL: srv.URL, LocalModel: "bad model; rm"},
 		{Provider: ProviderCloud, CloudModel: "~anthropic/claude-haiku-latest"}, // no key
 	} {
-		if err := s.Save(ctx, bad, nil); err == nil {
+		if err := s.Save(ctx, bad, "", nil); err == nil {
 			t.Errorf("saved %+v", bad)
 		} else if _, ok := err.(InputError); !ok {
 			t.Errorf("%+v: not an input error: %v", bad, err)
 		}
 	}
 
-	if err := s.Save(ctx, Settings{Provider: ProviderLocal, OllamaURL: srv.URL + "/", LocalModel: "qwen2.5-coder:1.5b"}, nil); err != nil {
+	if err := s.Save(ctx, Settings{Provider: ProviderLocal, OllamaURL: srv.URL + "/", LocalModel: "qwen2.5-coder:1.5b"}, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	go s.Run(ctx)
@@ -189,7 +189,7 @@ func TestFlagsAreTheStartingSettings(t *testing.T) {
 		t.Error("reading wrote settings")
 	}
 	// Once the page saves, the saved settings win.
-	if err := s.Save(ctx, Settings{Provider: ProviderLocal, OllamaURL: "http://other:11434", LocalModel: "qwen2.5-coder:3b"}, nil); err != nil {
+	if err := s.Save(ctx, Settings{Provider: ProviderLocal, OllamaURL: "http://other:11434", LocalModel: "qwen2.5-coder:3b"}, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if v, _ := s.Get(ctx); v.OllamaURL != "http://other:11434" || v.LocalModel != "qwen2.5-coder:3b" {
@@ -263,7 +263,7 @@ func TestCloudModelWithMaskedAddresses(t *testing.T) {
 	s.OpenRouterURL = srv.URL
 	ctx := context.Background()
 	key := "sk-or-test"
-	if err := s.Save(ctx, Settings{Provider: ProviderCloud, CloudModel: "~anthropic/claude-haiku-latest"}, &key); err != nil {
+	if err := s.Save(ctx, Settings{Provider: ProviderCloud, CloudModel: "~anthropic/claude-haiku-latest"}, "", &key); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(store.m[settingKey], key) {
@@ -297,7 +297,7 @@ func TestCloudModelWithMaskedAddresses(t *testing.T) {
 	}
 
 	// Without masking, lines go as they are.
-	if err := s.Save(ctx, Settings{Provider: ProviderCloud, CloudModel: "~anthropic/claude-haiku-latest", SendAddresses: true}, nil); err != nil {
+	if err := s.Save(ctx, Settings{Provider: ProviderCloud, CloudModel: "~anthropic/claude-haiku-latest", SendAddresses: true}, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	fr.sent = nil
@@ -315,13 +315,13 @@ func TestCloudModelWithMaskedAddresses(t *testing.T) {
 		t.Errorf("wrong key = %v", err)
 	}
 	// The model list keeps models that can answer in JSON, as text, not batch.
-	models, err := s.CloudModels(ctx)
+	models, _, err := s.CloudModels(ctx, ProviderCloud, nil)
 	if err != nil || len(models) != 2 || models[0].Prompt != "1" || models[0].Output != "5" || !models[1].Free {
 		t.Errorf("models = %+v %v", models, err)
 	}
 	// Removing the key takes the cloud out of use.
 	empty := ""
-	if err := s.Save(ctx, Settings{Provider: ProviderCloud, CloudModel: "~anthropic/claude-haiku-latest"}, &empty); err == nil {
+	if err := s.Save(ctx, Settings{Provider: ProviderCloud, CloudModel: "~anthropic/claude-haiku-latest"}, "", &empty); err == nil {
 		t.Error("cloud saved with the key removed")
 	}
 }

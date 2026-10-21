@@ -191,6 +191,7 @@ func (s *Server) Handler() http.Handler {
 	admin("PUT /api/v1/integrations/ai", s.handleSaveAI)
 	admin("POST /api/v1/integrations/ai/test", s.handleTestAI)
 	admin("GET /api/v1/integrations/ai/cloud-models", s.handleCloudModels)
+	admin("POST /api/v1/integrations/ai/cloud-models", s.handleCloudModels)
 	// Where email's settings were before the Integrations page (v0.10).
 	admin("GET /api/v1/system/email", s.handleGetEmail)
 	admin("PUT /api/v1/system/email", s.handleSaveEmail)
