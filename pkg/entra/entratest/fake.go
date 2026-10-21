@@ -37,7 +37,14 @@ type Microsoft struct {
 	GraphStatus  int    // answer Graph with this status when non-zero
 	PageSize     int    // members per page (0: all in one)
 	NextLinkHost string // when set, nextLink points here instead of back at the fake
-	Opts         TokenOptions
+	// NoFilter makes Graph refuse a filtered member list, as a tenant
+	// without advanced queries would.
+	NoFilter bool
+	// Lag is a member the filtered lookup doesn't know about yet.
+	Lag string
+	// Filtered counts filtered member lookups; Listed counts full member list reads.
+	Filtered, Listed int
+	Opts             TokenOptions
 	// BeforeCodeExchange, if set, runs as the sign-in code is being exchanged,
 	// for tests of something changing in the middle of a sign-in.
 	BeforeCodeExchange func()
@@ -203,16 +210,30 @@ func (f *Microsoft) graph(w http.ResponseWriter, r *http.Request) {
 	case tail == "" && r.Method == "GET":
 		json.NewEncoder(w).Encode(map[string]string{"id": gid, "displayName": "Group " + gid[len(gid)-1:]})
 	case tail == "checkMemberObjects" && r.Method == "POST":
-		var in struct{ IDs []string }
-		json.NewDecoder(r.Body).Decode(&in)
-		out := []string{}
-		for _, id := range in.IDs {
-			if members[strings.ToLower(id)] {
-				out = append(out, id)
-			}
+		// What Graph really does with a person's ID here: it asks which groups
+		// the group belongs to, so a person's ID is refused.
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "Request_BadRequest",
+			"message": "The object class referenced by given parameters is not valid for member link."}})
+	case tail == "transitiveMembers/microsoft.graph.user" && r.Method == "GET" && r.URL.Query().Get("$filter") != "":
+		q := r.URL.Query()
+		var oid string
+		if f.NoFilter || r.Header.Get("ConsistencyLevel") != "eventual" || q.Get("$count") != "true" ||
+			func() bool { _, err := fmt.Sscanf(q.Get("$filter"), "id eq '%36s'", &oid); return err != nil }() {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": "Request_UnsupportedQuery", "message": "Unsupported Query."}})
+			return
 		}
-		json.NewEncoder(w).Encode(map[string]any{"value": out})
+		f.Filtered++
+		page := []map[string]any{}
+		if _, ok := members[strings.ToLower(oid)]; ok && !strings.EqualFold(oid, f.Lag) {
+			page = append(page, map[string]any{"id": oid})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"@odata.count": len(page), "value": page})
 	case tail == "transitiveMembers/microsoft.graph.user" && r.Method == "GET":
+		if r.URL.Query().Get("skip") == "" {
+			f.Listed++
+		}
 		var ids []string
 		for id := range members {
 			ids = append(ids, id)
