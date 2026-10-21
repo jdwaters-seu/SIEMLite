@@ -1390,28 +1390,35 @@ function resizableColumns(table) {
   if (!table.tHead || table.dataset.cols) return;
   table.dataset.cols = "1";
   const ths = [...table.tHead.rows[0].cells];
+  // A table with a <colgroup> takes its widths from the <col>s, so those are
+  // sized along with the headers.
+  const cols = [...table.querySelectorAll(":scope > colgroup > col")];
+  const setW = (i, w) => {
+    ths[i].style.width = w;
+    if (cols.length === ths.length) cols[i].style.width = w;
+  };
   const section = table.closest("section[id]");
   const key = `siemlite-cols:${section ? section.id : ""}:${[...(section || document).querySelectorAll("table.data")].indexOf(table)}`;
   const save = () => { try { localStorage.setItem(key, JSON.stringify(ths.map((h) => Math.round(h.getBoundingClientRect().width)))); } catch {} };
   try {
     const w = JSON.parse(localStorage.getItem(key) || "null");
     if (Array.isArray(w) && w.length === ths.length && w.every((n) => n > 0)) {
-      ths.forEach((h, i) => { h.style.width = w[i] + "px"; });
+      ths.forEach((h, i) => setW(i, w[i] + "px"));
       table.classList.add("sized");
     }
   } catch {}
   const freeze = () => {
     if (table.classList.contains("sized")) return;
     const ws = ths.map((h) => h.getBoundingClientRect().width);
-    ths.forEach((h, i) => { h.style.width = ws[i] + "px"; });
+    ths.forEach((h, i) => setW(i, ws[i] + "px"));
     table.classList.add("sized");
   };
   const MIN = 40;
   // Moves the line between column i and i+1, so the table keeps its width.
   const move = (i, d, startW, nextW) => {
     d = Math.max(-(startW - MIN), Math.min(d, nextW - MIN));
-    ths[i].style.width = (startW + d) + "px";
-    ths[i + 1].style.width = (nextW - d) + "px";
+    setW(i, (startW + d) + "px");
+    setW(i + 1, (nextW - d) + "px");
   };
   // A last column of buttons keeps its width: the line before it isn't movable.
   const last = ths.at(-1).querySelector(".visually-hidden") ? ths.length - 2 : ths.length - 1;
@@ -1441,7 +1448,7 @@ function resizableColumns(table) {
       save();
     };
     grip.ondblclick = () => {
-      ths.forEach((h) => { h.style.width = ""; });
+      ths.forEach((h, i) => setW(i, ""));
       table.classList.remove("sized");
       try { localStorage.removeItem(key); } catch {}
     };
