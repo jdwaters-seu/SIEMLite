@@ -410,3 +410,20 @@ func TestCountSourceEvents(t *testing.T) {
 		t.Errorf("a window reaching the late batch = %d, want 12", got)
 	}
 }
+
+// A volume rule keeps no search or grouping, however it was saved.
+func TestVolumeRuleDropsSearchAndGrouping(t *testing.T) {
+	repo, _, _ := setup(t)
+	ctx := context.Background()
+	src, _ := repo.CreateTokenSource(ctx, "s", "k", nil, false, 1)
+	sev := 3
+	id, err := repo.SaveRule(ctx, storage.Rule{Name: "v", Kind: storage.RuleVolumeOver, Enabled: true, Severity: 3, SourceID: &src,
+		Query: "failed", MinSeverity: &sev, ThreatOnly: true, GroupBy: "src_ip", Threshold: 5, WindowMinutes: 5}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetRule(ctx, id)
+	if err != nil || got.Query != "" || got.MinSeverity != nil || got.ThreatOnly || got.GroupBy != "" || got.SourceID == nil {
+		t.Errorf("saved volume rule = %+v, %v", got, err)
+	}
+}

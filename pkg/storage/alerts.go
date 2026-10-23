@@ -130,6 +130,9 @@ func (r *Repository) SaveRule(ctx context.Context, ru Rule, nowMs int64) (int64,
 	if ru.Kind == "" {
 		ru.Kind = RuleMatch
 	}
+	if ru.IsVolume() { // a volume rule counts all of one source's events: no search or grouping, whoever calls
+		ru.Query, ru.MinSeverity, ru.ThreatOnly, ru.GroupBy = "", nil, false, ""
+	}
 	if ru.ID == 0 {
 		res, err = r.db.Write.ExecContext(ctx, `INSERT INTO alert_rules (name, description, enabled, severity, query, min_severity,
 			threat_only, source_id, group_by, threshold, window_minutes, builtin, created_at, updated_at, kind)
