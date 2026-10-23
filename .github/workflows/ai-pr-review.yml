@@ -84,6 +84,21 @@ jobs:
               except Exception as e:
                   semgrep_findings = f"Could not parse Semgrep results: {e}"
 
+          # Try to gather project context
+          project_context = ""
+          for ctx_file in ["README.md", "DESIGN.md", "CONTRIBUTING.md"]:
+              if os.path.exists(ctx_file):
+                  try:
+                      with open(ctx_file, "r", encoding="utf-8", errors="ignore") as f:
+                          content = f.read()
+                          # Keep it reasonably short
+                          if len(content) > 2000:
+                              content = content[:2000] + "\n\n... [truncated] ..."
+                          project_context += f"\n### {ctx_file}\n{content}\n"
+                  except Exception:
+                      pass
+                  break  # Just grab the first one we find
+
           def query_openrouter(model_id, messages, temperature=0.7, timeout=120):
               payload = {
                   "model": model_id,
@@ -113,23 +128,27 @@ jobs:
                   return f"⚠️ Analysis error: {str(e)}"
 
           # Inspection prompt combining Diff + Semgrep Findings + PR Intent
-          analysis_prompt = f"""You are a specialized automated code reviewer.
-          PR Title: {pr_title}
-          PR Description: {pr_body}
+          analysis_prompt = f"""You are an expert code reviewer. Your task is to review the provided code changes (git diff format) and offer constructive feedback.
+
+          Project Context:{project_context}
+
+          The changes were made as part of the following task:
+          Title: {pr_title}
+          Description: {pr_body}
 
           Static Analysis (Semgrep) Output:
           {semgrep_findings}
 
-          Analyze this unified git diff for:
-          1. Concrete logic bugs, null pointer/undefined dereferences, or broken control flows.
-          2. Edge cases and discrepancies between the PR's stated intent and the code.
-          3. Security vulnerabilities and verified SAST warnings.
-          4. Performance or resource leak issues.
+          Please focus your review on: code quality, best practices, potential bugs, readability, maintainability, performance, and security.
+
+          Review the git diff below. Highlight potential bugs, suggest improvements for readability, maintainability, performance, and adherence to best practices. If you see positive aspects, mention them too. Structure your review logically by file or theme.
 
           Strict guidelines:
           - Cite the specific file and line numbers where an issue exists.
           - Offer a concise, practical code fix.
           - Do NOT include stylistic or subjective formatting comments.
+          - Cross-reference the PR's stated intent with the actual changes and flag discrepancies.
+          - Investigate Semgrep findings and determine if they represent real issues or false alarms.
           - If the diff looks sound, confirm that no critical issues were detected.
 
           Git Diff:
@@ -139,7 +158,7 @@ jobs:
           """
 
           messages = [
-              {"role": "system", "content": "You are an automated, bug-focused code reviewer."},
+              {"role": "system", "content": "You are an expert code reviewer focused on producing actionable, balanced feedback."},
               {"role": "user", "content": analysis_prompt}
           ]
 
