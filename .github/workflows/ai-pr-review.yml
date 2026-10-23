@@ -18,7 +18,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh pr diff "$PR_NUMBER" > pr_diff.patch
+          gh api "repos/${{ github.repository }}/pulls/$PR_NUMBER" \
+            -H "Accept: application/vnd.github.diff" > pr_diff.patch
+
           if [ ! -s pr_diff.patch ]; then
             echo "empty=true" >> "$GITHUB_OUTPUT"
           else
