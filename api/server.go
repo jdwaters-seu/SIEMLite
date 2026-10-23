@@ -4,6 +4,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
@@ -92,6 +93,9 @@ type Server struct {
 
 	checkMu sync.Mutex
 	checks  map[string]time.Time // reachability checks under way (tlsapi.go)
+
+	ssoMu      sync.Mutex
+	ssoFlights map[[sha256.Size]byte]*ssoFlight // Microsoft callbacks lately, by state (entra.go)
 
 	// Failed and blocked sign-ins are recorded before anyone has signed in,
 	// so strangers mustn't be able to fill the database with them. Each

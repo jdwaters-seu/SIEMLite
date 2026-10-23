@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"net/http"
@@ -219,7 +220,107 @@ func (s *Server) handleEntraCallback(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(ssoCookie); err == nil {
 		cookie = c.Value
 	}
-	user, err := s.deps.Entra.CompleteLogin(r.Context(), q.Get("code"), q.Get("state"), cookie)
+	// A browser can send the callback twice, a moment apart or at once (a
+	// link checker, an extension, a retrying proxy). The code works once, so
+	// the second would fail and be recorded as a failed sign-in right after
+	// the real one. A repeat is answered like the first instead.
+	f, first := s.ssoFlightFor(q.Get("state"), cookie)
+	if f != nil && !first {
+		select {
+		case <-f.done:
+			if f.token != "" {
+				auth.SetSessionCookie(w, f.token)
+			}
+			s.ssoRedirect(w, r, f.code)
+		case <-time.After(30 * time.Second):
+			s.ssoRedirect(w, r, entra.CodeFailed)
+		case <-r.Context().Done():
+		}
+		return
+	}
+	if f == nil && s.ssoSeen(q.Get("state")) { // the same sign-in again, without its cookie: the first one already ran
+		s.ssoRedirect(w, r, "")
+		return
+	}
+	token, code := s.completeEntra(r, ip, q.Get("code"), q.Get("state"), cookie)
+	if f != nil {
+		f.token, f.code = token, code
+		close(f.done)
+	}
+	if token != "" {
+		auth.SetSessionCookie(w, token)
+	}
+	s.ssoRedirect(w, r, code)
+}
+
+// ssoFlight is one sign-in's callback, kept for a short while so that a repeat
+// of it gets the same answer.
+type ssoFlight struct {
+	done   chan struct{}
+	cookie [sha256.Size]byte
+	made   time.Time
+	token  string // the session, if the sign-in worked
+	code   string // else why not ("" when it did)
+}
+
+const (
+	ssoFlightTTL = 2 * time.Minute
+	ssoFlightMax = 2000
+)
+
+func ssoKey(state string) [sha256.Size]byte { return sha256.Sum256([]byte(state)) }
+
+// ssoFlightFor registers this callback, or finds the earlier one it repeats.
+// Only a callback that carries a flow cookie is registered, and a repeat must
+// carry the same cookie to share the first one's session: the state alone is
+// in the address bar and must not be enough to take a session.
+func (s *Server) ssoFlightFor(state, cookie string) (f *ssoFlight, first bool) {
+	if state == "" || cookie == "" {
+		return nil, false
+	}
+	key, ck := ssoKey(state), sha256.Sum256([]byte(cookie))
+	s.ssoMu.Lock()
+	defer s.ssoMu.Unlock()
+	now := time.Now()
+	if len(s.ssoFlights) >= ssoFlightMax {
+		for k, v := range s.ssoFlights {
+			if now.Sub(v.made) > ssoFlightTTL {
+				delete(s.ssoFlights, k)
+			}
+		}
+		if len(s.ssoFlights) >= ssoFlightMax {
+			clear(s.ssoFlights)
+		}
+	}
+	if old, ok := s.ssoFlights[key]; ok && now.Sub(old.made) <= ssoFlightTTL {
+		if old.cookie == ck {
+			return old, false
+		}
+		return nil, false
+	}
+	if s.ssoFlights == nil {
+		s.ssoFlights = map[[sha256.Size]byte]*ssoFlight{}
+	}
+	f = &ssoFlight{done: make(chan struct{}), cookie: ck, made: now}
+	s.ssoFlights[key] = f
+	return f, true
+}
+
+// ssoSeen reports whether a callback for this state has run lately.
+func (s *Server) ssoSeen(state string) bool {
+	if state == "" {
+		return false
+	}
+	s.ssoMu.Lock()
+	defer s.ssoMu.Unlock()
+	f, ok := s.ssoFlights[ssoKey(state)]
+	return ok && time.Since(f.made) <= ssoFlightTTL
+}
+
+// completeEntra finishes a sign-in and records it. It returns the new session's
+// token, or else the short code of why it failed.
+func (s *Server) completeEntra(r *http.Request, ip, code, state, cookie string) (token, errCode string) {
+	user, err := s.deps.Entra.CompleteLogin(r.Context(), code, state, cookie)
 	if err != nil {
 		var le *entra.LoginError
 		if !errors.As(err, &le) {
@@ -236,14 +337,12 @@ func (s *Server) handleEntraCallback(w http.ResponseWriter, r *http.Request) {
 		}
 		s.auditSignin(r, audit.Entry{Action: "signin.sso.failed", Actor: "unknown", Class: audit.Authentication, Severity: 3, Message: msg,
 			Fields: map[string]string{"reason": le.Code}})
-		s.ssoRedirect(w, r, le.Code)
-		return
+		return "", le.Code
 	}
-	token, err := s.deps.Auth.StartSession(r.Context(), user)
+	token, err = s.deps.Auth.StartSession(r.Context(), user)
 	if err != nil {
 		s.deps.Logger.Error("starting a session after Microsoft sign-in failed", "err", err)
-		s.ssoRedirect(w, r, entra.CodeFailed)
-		return
+		return "", entra.CodeFailed
 	}
 	// Turning sign-in with Microsoft off ends every Microsoft session. A sign-in
 	// that was already under way could finish just after that, so check again now
@@ -253,10 +352,8 @@ func (s *Server) handleEntraCallback(w http.ResponseWriter, r *http.Request) {
 		if err := s.deps.Auth.EndSession(r.Context(), token); err != nil {
 			s.deps.Logger.Error("couldn't end a session started as sign-in with Microsoft was turned off", "err", err)
 		}
-		s.ssoRedirect(w, r, "off")
-		return
+		return "", "off"
 	}
-	auth.SetSessionCookie(w, token)
 	s.audit(r, audit.Entry{Action: "signin.sso", Actor: user.Username, Class: audit.Authentication, Message: (&auth.Principal{Name: user.Username, DisplayName: user.DisplayName}).Label() + " signed in with Microsoft"})
-	s.ssoRedirect(w, r, "")
+	return token, ""
 }
