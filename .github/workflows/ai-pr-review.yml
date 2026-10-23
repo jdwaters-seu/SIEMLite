@@ -27,11 +27,20 @@ jobs:
             echo "empty=false" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Run Static Bug Analysis (Semgrep)
+        continue-on-error: true
+        run: |
+          pip install semgrep
+          # Scans diff changes for security, null-pointers, and logical bugs
+          semgrep scan --config auto --json --output semgrep_results.json || true
+
       - name: Run Multi-Model Review Pipeline
         if: steps.get_diff.outputs.empty == 'false'
         env:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
           REPO_NAME: ${{ github.repository }}
         run: |
           python3 - << 'EOF'
@@ -45,6 +54,8 @@ jobs:
           api_key = os.environ.get("OPENROUTER_API_KEY")
           repo = os.environ.get("REPO_NAME", "")
           pr_num = os.environ.get("PR_NUMBER", "")
+          pr_title = os.environ.get("PR_TITLE", "")
+          pr_body = os.environ.get("PR_BODY", "")
 
           if not api_key:
               print("Missing OPENROUTER_API_KEY secret.")
@@ -52,6 +63,21 @@ jobs:
 
           with open("pr_diff.patch", "r", encoding="utf-8", errors="ignore") as f:
               diff_text = f.read()
+
+          # Read Semgrep findings
+          semgrep_context = "No deterministic static issues found."
+          if os.path.exists("semgrep_results.json"):
+              try:
+                  with open("semgrep_results.json") as f:
+                      data = json.load(f)
+                      matches = [
+                          f"[{m['check_id']}] {m['path']}:{m['start']['line']} - {m['extra']['message']}"
+                          for m in data.get("results", [])
+                      ]
+                      if matches:
+                          semgrep_context = "\n".join(matches[:15])  # top 15 findings
+              except Exception:
+                  pass
 
           # Cap diff to fit comfortably within free-tier payload budgets
           MAX_CHARS = 80000
@@ -87,24 +113,37 @@ jobs:
                   return f"⚠️ Analysis error: {str(e)}"
 
           # Step 1: Base analysis prompt for the two inspection models
-          analysis_prompt = f"""You are a specialized automated code reviewer.
-          Analyze this unified git diff for:
-          1. Concrete logic bugs, null pointer/undefined dereferences, or broken control flows.
-          2. Concurrency, memory leak, or performance issues.
-          3. Security vulnerabilities and exposed sensitive data.
-          4. Unhandled error states or edge cases.
+          analysis_prompt = f"""You are a lead architect conducting a deep code review.
 
-          Strict guidelines:
-          - Cite the specific file and line numbers where an issue exists.
-          - Offer a concise, practical code fix.
-          - Do NOT include stylistic or subjective formatting comments.
-          - If the diff looks sound, confirm that no critical issues were detected.
+PR Context:
+- Title: {pr_title}
+- Description: {pr_body}
 
-          Git Diff:
-          ```diff
-          {diff_text}
-          ```
-          """
+Automated SAST Tool Findings:
+{semgrep_context}
+
+Analyze this unified git diff for:
+1. Concrete logic bugs, null pointer/undefined dereferences, or broken control flows.
+2. Concurrency, memory leak, or performance issues.
+3. Security vulnerabilities and exposed sensitive data.
+4. Unhandled error states or edge cases.
+
+Instructions:
+Cross-reference the developer's stated intent in the PR description with the actual changes.
+Investigate the SAST findings above and determine if they represent real exploits or false alarms.
+Check for architectural drift, missing test assertions, and boundary-condition failures.
+
+Strict guidelines:
+- Cite the specific file and line numbers where an issue exists.
+- Offer a concise, practical code fix.
+- Do NOT include stylistic or subjective formatting comments.
+- If the diff looks sound, confirm that no critical issues were detected.
+
+Git Diff:
+```diff
+{diff_text}
+```
+"""
 
           messages = [
               {"role": "system", "content": "You are an automated, bug-focused code reviewer."},
