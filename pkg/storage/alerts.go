@@ -22,12 +22,26 @@ const (
 	AlertClosed       = "closed"
 )
 
-// Rule raises an alert when at least Threshold matching events, grouped by
-// GroupBy, arrive within WindowMinutes.
+// Rule kinds. A "match" rule raises an alert when at least Threshold matching
+// events, grouped by GroupBy, arrive within WindowMinutes. A volume rule
+// watches one source (SourceID) and raises an alert when it has sent more
+// than (volume_over) or fewer than (volume_under) Threshold events in the
+// last WindowMinutes.
+const (
+	RuleMatch       = "match"
+	RuleVolumeOver  = "volume_over"
+	RuleVolumeUnder = "volume_under"
+)
+
+// IsVolume reports whether the rule watches a source's volume.
+func (r Rule) IsVolume() bool { return r.Kind == RuleVolumeOver || r.Kind == RuleVolumeUnder }
+
+// Rule is an alert rule; see the kinds above.
 type Rule struct {
 	ID            int64  `json:"id"`
 	Name          string `json:"name"`
 	Description   string `json:"description"`
+	Kind          string `json:"kind"` // match, volume_over or volume_under
 	Enabled       bool   `json:"enabled"`
 	Severity      int    `json:"severity"` // the alert's severity
 	Query         string `json:"query"`    // FTS5 expression; empty matches everything
@@ -60,13 +74,13 @@ type Alert struct {
 }
 
 const ruleCols = `id, name, description, enabled, severity, query, min_severity, threat_only, source_id, group_by,
-	threshold, window_minutes, builtin, created_at, updated_at`
+	threshold, window_minutes, builtin, created_at, updated_at, kind`
 
 func scanRule(row interface{ Scan(...any) error }) (*Rule, error) {
 	var r Rule
 	var minSev, src sql.NullInt64
 	if err := row.Scan(&r.ID, &r.Name, &r.Description, &r.Enabled, &r.Severity, &r.Query, &minSev, &r.ThreatOnly, &src,
-		&r.GroupBy, &r.Threshold, &r.WindowMinutes, &r.Builtin, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		&r.GroupBy, &r.Threshold, &r.WindowMinutes, &r.Builtin, &r.CreatedAt, &r.UpdatedAt, &r.Kind); err != nil {
 		return nil, err
 	}
 	if minSev.Valid {
@@ -113,18 +127,24 @@ func (r *Repository) GetRule(ctx context.Context, id int64) (*Rule, error) {
 func (r *Repository) SaveRule(ctx context.Context, ru Rule, nowMs int64) (int64, error) {
 	var res sql.Result
 	var err error
+	if ru.Kind == "" {
+		ru.Kind = RuleMatch
+	}
+	if ru.IsVolume() { // a volume rule counts all of one source's events: no search or grouping, whoever calls
+		ru.Query, ru.MinSeverity, ru.ThreatOnly, ru.GroupBy = "", nil, false, ""
+	}
 	if ru.ID == 0 {
 		res, err = r.db.Write.ExecContext(ctx, `INSERT INTO alert_rules (name, description, enabled, severity, query, min_severity,
-			threat_only, source_id, group_by, threshold, window_minutes, builtin, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+			threat_only, source_id, group_by, threshold, window_minutes, builtin, created_at, updated_at, kind)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
 			ru.Name, ru.Description, ru.Enabled, ru.Severity, ru.Query, ru.MinSeverity, ru.ThreatOnly, ru.SourceID, ru.GroupBy,
-			ru.Threshold, ru.WindowMinutes, nowMs, nowMs)
+			ru.Threshold, ru.WindowMinutes, nowMs, nowMs, ru.Kind)
 	} else {
 		res, err = r.db.Write.ExecContext(ctx, `UPDATE alert_rules SET name = ?, description = ?, enabled = ?, severity = ?,
 			query = ?, min_severity = ?, threat_only = ?, source_id = ?, group_by = ?, threshold = ?, window_minutes = ?,
-			updated_at = ? WHERE id = ?`,
+			kind = ?, updated_at = ? WHERE id = ?`,
 			ru.Name, ru.Description, ru.Enabled, ru.Severity, ru.Query, ru.MinSeverity, ru.ThreatOnly, ru.SourceID, ru.GroupBy,
-			ru.Threshold, ru.WindowMinutes, nowMs, ru.ID)
+			ru.Threshold, ru.WindowMinutes, ru.Kind, nowMs, ru.ID)
 	}
 	if uniqueErr(err) {
 		return 0, ErrRuleExists
@@ -376,6 +396,65 @@ func (r *Repository) RaiseAlert(ctx context.Context, ru Rule, value string, newC
 	}
 	if err != nil {
 		return false, fmt.Errorf("raise alert: %w", err)
+	}
+	return opened, tx.Commit()
+}
+
+// CountSourceEvents counts the events a source has in [from, to] (event
+// times, in milliseconds). Events stored under their real date count where
+// they belong, so a batch of old logs doesn't look like a burst now.
+func (r *Repository) CountSourceEvents(ctx context.Context, sourceID, from, to int64) (int64, error) {
+	d := r.db.days
+	d.move.RLock()
+	defer d.move.RUnlock()
+	var total int64
+	for _, s := range d.span(from, to) {
+		db, err := s.reader()
+		if err != nil {
+			return 0, err
+		}
+		where := []string{"e.source_id = ?", "e.timestamp >= ?", "e.timestamp <= ?"}
+		args := []any{sourceID, from, to}
+		if lw, la := d.legacyWhere(s); lw != "" {
+			where, args = append(where, lw), append(args, la...)
+		}
+		var n int64
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events e`+whereSQL(where), args...).Scan(&n); err != nil {
+			return 0, fmt.Errorf("count source events: %w", err)
+		}
+		total += n
+	}
+	return total, nil
+}
+
+// RaiseVolumeAlert records that a volume rule's condition holds, with the
+// events counted in the window [first, last]. An open or acknowledged alert
+// for the rule is updated (keeping the peak of a "more than" rule and the
+// lowest of a "fewer than" rule) instead of opening another.
+func (r *Repository) RaiseVolumeAlert(ctx context.Context, ru Rule, count, first, last, nowMs int64) (opened bool, err error) {
+	tx, err := r.db.Write.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	var id int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM alerts WHERE rule_id = ? AND status <> 'closed' ORDER BY id DESC LIMIT 1`, ru.ID).Scan(&id)
+	switch {
+	case err == nil:
+		pick := "MAX"
+		if ru.Kind == RuleVolumeUnder {
+			pick = "MIN"
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE alerts SET count = `+pick+`(count, ?), last_seen = MAX(last_seen, ?), severity = ?, updated_at = ?
+			WHERE id = ?`, count, last, ru.Severity, nowMs, id)
+	case errors.Is(err, sql.ErrNoRows):
+		opened = true
+		_, err = tx.ExecContext(ctx, `INSERT INTO alerts (rule_id, rule_name, severity, group_by, group_value, status, count,
+			first_seen, last_seen, created_at, updated_at) VALUES (?, ?, ?, '', '', 'open', ?, ?, ?, ?, ?)`,
+			ru.ID, ru.Name, ru.Severity, count, first, last, nowMs, nowMs)
+	}
+	if err != nil {
+		return false, fmt.Errorf("raise volume alert: %w", err)
 	}
 	return opened, tx.Commit()
 }

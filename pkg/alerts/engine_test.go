@@ -261,3 +261,169 @@ func TestLateEventsInOldDay(t *testing.T) {
 		t.Errorf("late brute force = %+v", b)
 	}
 }
+
+// A volume rule counts what one source sent in the last window: more than a
+// number raises an alert (and keeps the peak), fewer than one raises it only
+// once the rule and SIEMLite have been there for a whole window.
+func TestVolumeRules(t *testing.T) {
+	repo, w, eng := setup(t)
+	ctx := context.Background()
+	noisy, err := repo.CreateTokenSource(ctx, "noisy", "k1", nil, false, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	quiet, err := repo.CreateTokenSource(ctx, "quiet", "k2", nil, false, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	eng.now = func() time.Time { return now }
+	eng.started = now.Add(-time.Hour)
+	send := func(src int64, n int, at time.Time) {
+		for i := 0; i < n; i++ {
+			if err := w.SubmitWith(ctx, event(at.Add(-time.Duration(i)*time.Second), "hello", "10.0.0.1"), ingest.SubmitOptions{SourceID: src}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		w.Drain(ctx)
+	}
+	save := func(name, kind string, src int64, threshold, window int, updated time.Time) {
+		t.Helper()
+		if _, err := repo.SaveRule(ctx, storage.Rule{Name: name, Kind: kind, Enabled: true, Severity: 4, SourceID: &src,
+			Threshold: threshold, WindowMinutes: window}, updated.UnixMilli()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := now.Add(-time.Hour)
+	save("noisy over 20", storage.RuleVolumeOver, noisy, 20, 10, old)
+	save("noisy under 5", storage.RuleVolumeUnder, noisy, 5, 10, old)
+	save("quiet under 5", storage.RuleVolumeUnder, quiet, 5, 10, old)
+	save("quiet over 20", storage.RuleVolumeOver, quiet, 20, 10, old)
+
+	send(noisy, 15, now)
+	send(quiet, 2, now)
+	if _, err := eng.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := alertsByRule(t, repo)
+	if len(got["noisy over 20"]) != 0 || len(got["noisy under 5"]) != 0 || len(got["quiet over 20"]) != 0 {
+		t.Errorf("alerts with the counts inside the limits: %v", got)
+	}
+	if a := got["quiet under 5"]; len(a) != 1 || a[0].Count != 2 || a[0].Severity != 4 || a[0].Status != "open" {
+		t.Errorf("quiet under 5 = %+v", a)
+	}
+
+	// More arrive: the "more than" rule fires, once, and keeps the peak.
+	send(noisy, 10, now)
+	eng.Check(ctx)
+	eng.Check(ctx)
+	if a := alertsByRule(t, repo)["noisy over 20"]; len(a) != 1 || a[0].Count != 25 {
+		t.Errorf("noisy over 20 = %+v", a)
+	}
+	// The window moves on: the alert stays open, still at its peak, and the
+	// source now counts as quiet.
+	now = now.Add(30 * time.Minute)
+	eng.Check(ctx)
+	got = alertsByRule(t, repo)
+	if a := got["noisy over 20"]; len(a) != 1 || a[0].Count != 25 || a[0].Status != "open" {
+		t.Errorf("noisy over 20 after the window = %+v", a)
+	}
+	if a := got["noisy under 5"]; len(a) != 1 || a[0].Count != 0 {
+		t.Errorf("noisy under 5 after the window = %+v", a)
+	}
+	if a := got["quiet under 5"]; len(a) != 1 || a[0].Count != 0 {
+		t.Errorf("quiet under 5 keeps the lowest = %+v", a)
+	}
+}
+
+// A "fewer than" rule that is new, edited or was running when SIEMLite started
+// says nothing until a whole window has passed.
+func TestVolumeUnderWaitsAWholeWindow(t *testing.T) {
+	repo, _, eng := setup(t)
+	ctx := context.Background()
+	src, err := repo.CreateTokenSource(ctx, "s", "k", nil, false, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	eng.now = func() time.Time { return now }
+	eng.started = now.Add(-time.Hour)
+	if _, err := repo.SaveRule(ctx, storage.Rule{Name: "silent", Kind: storage.RuleVolumeUnder, Enabled: true, Severity: 3, SourceID: &src,
+		Threshold: 1, WindowMinutes: 10}, now.UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	eng.Check(ctx)
+	if got := alertsByRule(t, repo)["silent"]; len(got) != 0 {
+		t.Fatalf("a rule just made alerted at once: %+v", got)
+	}
+	now = now.Add(11 * time.Minute)
+	eng.Check(ctx)
+	if got := alertsByRule(t, repo)["silent"]; len(got) != 1 {
+		t.Fatalf("no alert after a whole window of silence: %+v", got)
+	}
+	// SIEMLite starting just now holds a new alert back the same way.
+	if _, err := repo.SaveRule(ctx, storage.Rule{Name: "restarted", Kind: storage.RuleVolumeUnder, Enabled: true, Severity: 3, SourceID: &src,
+		Threshold: 1, WindowMinutes: 10}, now.Add(-time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	eng.started = now
+	eng.Check(ctx)
+	if got := alertsByRule(t, repo)["restarted"]; len(got) != 0 {
+		t.Fatalf("alerted straight after a restart: %+v", got)
+	}
+}
+
+// The count is one source's events in the window, by event time: another
+// source's events, and events outside the window (a late batch stored under
+// its real date, or one dated ahead), don't count.
+func TestCountSourceEvents(t *testing.T) {
+	repo, w, _ := setup(t)
+	ctx := context.Background()
+	a, _ := repo.CreateTokenSource(ctx, "a", "ka", nil, false, 1)
+	b, _ := repo.CreateTokenSource(ctx, "b", "kb", nil, false, 1)
+	now := time.Now()
+	send := func(src int64, at time.Time, n int) {
+		for i := 0; i < n; i++ {
+			if err := w.SubmitWith(ctx, event(at.Add(time.Duration(i)*time.Millisecond), "x", "10.0.0.1"), ingest.SubmitOptions{SourceID: src}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	send(a, now.Add(-2*time.Minute), 3)   // in the window
+	send(a, now.Add(-20*time.Minute), 4)  // before it
+	send(a, now.Add(-40*24*time.Hour), 5) // a late batch, in an older day
+	send(b, now.Add(-2*time.Minute), 7)   // another source
+	w.Drain(ctx)
+	from, to := now.Add(-10*time.Minute).UnixMilli(), now.UnixMilli()
+	for _, tc := range []struct {
+		src  int64
+		want int64
+	}{{a, 3}, {b, 7}, {a + b + 100, 0}} {
+		if got, err := repo.CountSourceEvents(ctx, tc.src, from, to); err != nil || got != tc.want {
+			t.Errorf("source %d: %d events, %v (want %d)", tc.src, got, err, tc.want)
+		}
+	}
+	if got, _ := repo.CountSourceEvents(ctx, a, now.Add(-30*time.Minute).UnixMilli(), to); got != 7 {
+		t.Errorf("a wider window = %d, want 7", got)
+	}
+	if got, _ := repo.CountSourceEvents(ctx, a, now.Add(-41*24*time.Hour).UnixMilli(), to); got != 12 {
+		t.Errorf("a window reaching the late batch = %d, want 12", got)
+	}
+}
+
+// A volume rule keeps no search or grouping, however it was saved.
+func TestVolumeRuleDropsSearchAndGrouping(t *testing.T) {
+	repo, _, _ := setup(t)
+	ctx := context.Background()
+	src, _ := repo.CreateTokenSource(ctx, "s", "k", nil, false, 1)
+	sev := 3
+	id, err := repo.SaveRule(ctx, storage.Rule{Name: "v", Kind: storage.RuleVolumeOver, Enabled: true, Severity: 3, SourceID: &src,
+		Query: "failed", MinSeverity: &sev, ThreatOnly: true, GroupBy: "src_ip", Threshold: 5, WindowMinutes: 5}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := repo.GetRule(ctx, id)
+	if err != nil || got.Query != "" || got.MinSeverity != nil || got.ThreatOnly || got.GroupBy != "" || got.SourceID == nil {
+		t.Errorf("saved volume rule = %+v, %v", got, err)
+	}
+}

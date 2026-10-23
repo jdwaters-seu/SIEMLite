@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.23.2` in `.env` to use it, or leave it out to build from the
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.24` in `.env` to use it, or leave it out to build from the
 checkout. Either way, start and update with `./update.sh`:
 
 ```sh
@@ -247,7 +247,7 @@ the raw text.
 | `GET`/`POST /api/v1/parsers`, `GET`/`PUT`/`DELETE /api/v1/parsers/{id}`, `GET /api/v1/parsers/templates` | admin | Manage parsers. |
 | `GET /api/v1/alerts?status=open` | any signed-in user not limited to some sources | Alerts (`open`, `acknowledged`, `closed` or `all`) and the count in each state. |
 | `PATCH /api/v1/alerts/{id}` | same | Acknowledge, close or reopen: `{"status": "acknowledged"}`. |
-| `GET /api/v1/rules`, `POST /api/v1/rules`, `PUT`/`DELETE /api/v1/rules/{id}` | any signed-in user (list), admin | Alert rules: `{"name", "description", "enabled", "severity", "query", "min_severity", "threat_only", "source_id", "group_by", "threshold", "window_minutes"}`. |
+| `GET /api/v1/rules`, `POST /api/v1/rules`, `PUT`/`DELETE /api/v1/rules/{id}` | any signed-in user (list), admin | Alert rules: `{"name", "description", "enabled", "severity", "query", "min_severity", "threat_only", "source_id", "group_by", "threshold", "window_minutes", "kind"}`. `kind` is `match` (the default), or `volume_over` / `volume_under` to alert when the source in `source_id` (required) sends more than / fewer than `threshold` events in `window_minutes`; those ignore `query`, `min_severity`, `threat_only` and `group_by`. |
 | `GET /api/v1/system` | admin | Database size and version, uptime, backups folder and free space. |
 | `GET`/`PUT /api/v1/system/tls`, `POST /api/v1/system/tls/check` | admin | The HTTPS certificate: `{"mode": "self-signed"/"letsencrypt", "domain"}`; the reply describes the certificates, whether one is being obtained, the last error and what the domain resolves to. The check (`{"domain"}`) says whether that name on port 443 reaches this SIEMLite. |
 | `GET /.well-known/siemlite-check/{token}` | public | Answers the check above with its one-time token. |
@@ -473,6 +473,14 @@ every 10 seconds.
 | Critical event | any event rated Critical or Fatal, per host |
 | Failed sign-ins to SIEMLite | 5 failed sign-ins to SIEMLite itself from one address within 15 minutes |
 | Mass ingestion of late logs | 50 or more events more than 30 days old arriving from one source at once (High; see [Keeping events](#keeping-events)) |
+
+A rule can instead watch **how much one source sends**: choose "A source sends more than a number of events" or "fewer than a
+number of events" when you make a rule, then the source, the number and the time window ("fewer than 1 event in 15 minutes" is
+a source that went quiet; "more than 5,000 in 10 minutes" is one flooding you). It counts the source's events in the last
+window, by when the events happened, every 10 seconds, so a batch of old logs doesn't count as a burst. A "fewer than" rule
+waits a whole window after it is saved or edited, or after SIEMLite starts, before it can say a source went quiet, since
+SIEMLite being off looks the same. The alert's count is the highest number seen for "more than" and the lowest for "fewer than".
+A source can't be deleted while a rule watches it.
 
 While an alert is open or acknowledged, more matching events add to it instead of raising a new one. Once it's closed,
 the next match raises a new alert. Built-in rules can be edited or switched off but not deleted. The [log

@@ -28,6 +28,8 @@ type Store interface {
 	WindowCounts(ctx context.Context, ru storage.Rule, groups []storage.RuleGroup, window, maxSeq int64) (map[string]storage.WindowStat, error)
 	ActiveAlertGroups(ctx context.Context, ruleID int64) (map[string]bool, error)
 	RaiseAlert(ctx context.Context, ru storage.Rule, value string, newCount, windowCount, first, last int64, nowMs int64) (bool, error)
+	CountSourceEvents(ctx context.Context, sourceID, from, to int64) (int64, error)
+	RaiseVolumeAlert(ctx context.Context, ru storage.Rule, count, first, last, nowMs int64) (bool, error)
 	Setting(ctx context.Context, key, def string) (string, error)
 	SetSetting(ctx context.Context, key, value string) error
 }
@@ -38,6 +40,9 @@ type Engine struct {
 	log   *slog.Logger
 	now   func() time.Time
 	mu    sync.Mutex
+	// started is when this engine began: a "fewer than" rule can't tell a
+	// quiet source from SIEMLite having been off, so it waits a whole window.
+	started time.Time
 }
 
 // New returns an engine.
@@ -45,7 +50,7 @@ func New(store Store, log *slog.Logger) *Engine {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Engine{store: store, log: log, now: time.Now}
+	return &Engine{store: store, log: log, now: time.Now, started: time.Now()}
 }
 
 // Result summarizes one check.
@@ -88,6 +93,9 @@ func (e *Engine) Check(ctx context.Context) (Result, error) {
 			from, _ = strconv.ParseInt(v, 10, 64)
 		}
 		from = min(from, maxID)
+		if ru.IsVolume() { // judged by the clock, not by new events: see checkVolume
+			continue
+		}
 		if ru.Enabled && from < maxID {
 			if err := e.checkRule(ctx, ru, from, maxID, now, &res); err != nil {
 				e.log.Warn("alert rule failed; it will look at these events again", "rule", ru.Name, "err", err)
@@ -105,7 +113,48 @@ func (e *Engine) Check(ctx context.Context) (Result, error) {
 			return res, err
 		}
 	}
+	e.checkVolume(ctx, rules, now, &res)
 	return res, e.store.SetSetting(ctx, checkpointKey, strconv.FormatInt(maxID, 10))
+}
+
+// checkVolume runs the rules that watch how much a source sends: it counts the
+// source's events in the last window and raises an alert when there are more
+// than (or fewer than) the rule's number. It runs on every check, since
+// silence is the absence of new events. A rule that fails is logged and tried
+// again at the next check.
+func (e *Engine) checkVolume(ctx context.Context, rules []storage.Rule, now int64, res *Result) {
+	for _, ru := range rules {
+		if !ru.IsVolume() || !ru.Enabled || ru.SourceID == nil { // a deleted source leaves nothing to watch
+			continue
+		}
+		window := int64(ru.WindowMinutes) * 60_000
+		under := ru.Kind == storage.RuleVolumeUnder
+		// Judge "fewer than" only once the rule and SIEMLite have both been
+		// there for a whole window, or a new rule (or a restart) would say the
+		// source went quiet.
+		if under && now-max(ru.UpdatedAt, e.started.UnixMilli()) < window {
+			continue
+		}
+		n, err := e.store.CountSourceEvents(ctx, *ru.SourceID, now-window, now)
+		if err != nil {
+			e.log.Warn("alert rule failed", "rule", ru.Name, "err", err)
+			continue
+		}
+		if (under && n >= int64(ru.Threshold)) || (!under && n <= int64(ru.Threshold)) {
+			continue
+		}
+		opened, err := e.store.RaiseVolumeAlert(ctx, ru, n, now-window, now, now)
+		if err != nil {
+			e.log.Warn("alert rule failed", "rule", ru.Name, "err", err)
+			continue
+		}
+		if opened {
+			res.Opened++
+			e.log.Info("alert opened", "rule", ru.Name, "events", n)
+		} else {
+			res.Updated++
+		}
+	}
 }
 
 // checkRule runs one rule over the events with arrival numbers in (from, maxID].
