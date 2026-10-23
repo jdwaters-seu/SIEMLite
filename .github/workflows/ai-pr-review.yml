@@ -91,13 +91,12 @@ jobs:
                   try:
                       with open(ctx_file, "r", encoding="utf-8", errors="ignore") as f:
                           content = f.read()
-                          # Keep it reasonably short
                           if len(content) > 2000:
                               content = content[:2000] + "\n\n... [truncated] ..."
                           project_context += f"\n### {ctx_file}\n{content}\n"
                   except Exception:
                       pass
-                  break  # Just grab the first one we find
+                  break
 
           def query_openrouter(model_id, messages, temperature=0.7, timeout=120):
               payload = {
@@ -162,36 +161,40 @@ jobs:
               {"role": "user", "content": analysis_prompt}
           ]
 
-          print("Querying analyzer models in parallel...")
-          with ThreadPoolExecutor(max_workers=2) as executor:
-              future_super_vl = executor.submit(
-                  query_openrouter,
-                  "nvidia/nemotron-3.5-super-vl:free",
-                  messages,
-                  1.0,
-                  120
-              )
-              future_ultra = executor.submit(
-                  query_openrouter,
-                  "nvidia/nemotron-3-ultra-550b-a55b:free",
-                  messages,
-                  1.0,
-                  120
-              )
-              report_super_vl = future_super_vl.result()
-              report_ultra = future_ultra.result()
+          # Define all analyzer models to run in parallel
+          ANALYZER_MODELS = [
+              "nvidia/nemotron-3.5-super-vl:free",
+              "nvidia/nemotron-3-ultra-550b-a55b:free",
+          ]
+
+          print(f"Querying {len(ANALYZER_MODELS)} analyzer models in parallel...")
+          reports = {}
+          with ThreadPoolExecutor(max_workers=len(ANALYZER_MODELS)) as executor:
+              future_to_model = {
+                  executor.submit(query_openrouter, model, messages, 1.0, 120): model
+                  for model in ANALYZER_MODELS
+              }
+              for future in future_to_model:
+                  model_name = future_to_model[future]
+                  reports[model_name] = future.result()
+
+          # Build the consolidated prompt dynamically
+          formatted_reports = "\n\n".join(
+              [f"### Report from {m}:\n{text}" for m, text in reports.items()]
+          )
 
           # Synthesis prompt
-          synthesis_prompt = f"""You are a Principal Software Architect synthesizing two automated code review reports into an executive GitHub PR review comment.
+          synthesis_prompt = f"""You are a Principal Software Architect synthesizing {len(ANALYZER_MODELS)} automated code review reports into an executive GitHub PR review comment.
 
           ### PR Context:
           - **Title**: {pr_title}
           - **Description**: {pr_body}
 
           ### Raw Engine Reports:
-          Report 1: {report_super_vl}
-          Report 2: {report_ultra}
-          SAST: {semgrep_findings}
+          {formatted_reports}
+
+          ### Static Analysis Findings (Semgrep):
+          {semgrep_findings}
 
           ### Output Rules & GitHub Markdown Requirements:
           1. **Never place multiline code blocks inside table cells** (this breaks GitHub Markdown tables). Use tables ONLY for brief 1-line summaries.
