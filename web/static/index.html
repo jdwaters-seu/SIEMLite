@@ -1284,23 +1284,27 @@
 <dialog id="dlg-rule" class="wide">
   <form method="dialog" id="rule-form">
     <h2 id="rule-dlg-title">New rule</h2>
-    <p>An alert opens when at least the given number of matching events arrive within the time window. Rules apply to events
-      stored from now on.</p>
+    <p id="r-intro"></p>
     <div class="two">
       <label class="field-label">Name <input class="input" id="r-name" maxlength="80"></label>
       <label class="field-label">Alert severity <select class="select" id="r-severity"></select></label>
     </div>
     <label class="field-label">Description <input class="input" id="r-desc" maxlength="300" placeholder="What this rule catches"></label>
-    <label class="field-label">Events that match the search <input class="input mono" id="r-query" placeholder='"failed password" (leave empty for any event)'></label>
+    <label class="field-label">Alert when <select class="select" id="r-kind">
+      <option value="match">Matching events arrive</option>
+      <option value="volume_over">A source sends more than a number of events</option>
+      <option value="volume_under">A source sends fewer than a number of events</option>
+    </select></label>
+    <label class="field-label" data-match>Events that match the search <input class="input mono" id="r-query" placeholder='"failed password" (leave empty for any event)'></label>
     <div class="two">
-      <label class="field-label">From source <select class="select" id="r-source"></select></label>
-      <label class="field-label">With severity of at least <select class="select" id="r-minsev"></select></label>
+      <label class="field-label"><span id="r-source-label">From source</span> <select class="select" id="r-source"></select></label>
+      <label class="field-label" data-match>With severity of at least <select class="select" id="r-minsev"></select></label>
     </div>
-    <label class="check"><input type="checkbox" id="r-threat"> Only events that matched threat intel</label>
+    <label class="check" data-match><input type="checkbox" id="r-threat"> Only events that matched threat intel</label>
     <div class="three">
-      <label class="field-label">At least <input class="input" id="r-threshold" type="number" min="1" value="10"></label>
+      <label class="field-label"><span id="r-threshold-label">At least</span> <input class="input" id="r-threshold" type="number" min="1" value="10"></label>
       <label class="field-label">Within (minutes) <input class="input" id="r-window" type="number" min="1" value="5"></label>
-      <label class="field-label">Counted for <select class="select" id="r-group">
+      <label class="field-label" data-match>Counted for <select class="select" id="r-group">
         <option value="src_ip">Each source IP</option><option value="dst_ip">Each destination IP</option>
         <option value="user">Each user</option><option value="host">Each host</option><option value="">All events together</option>
       </select></label>
@@ -2929,6 +2933,11 @@ async function openAlerts(params) {
   loadAlertsView();
 }
 function ruleSentence(r) {
+  if (r.kind === "volume_over" || r.kind === "volume_under") {
+    const src = r.source_id ? ((sourcesCache.find((x) => x.id === r.source_id) || {}).name || "a source that was removed") : "a source that was removed";
+    return el("span", { className: "rule-sentence" }, `${src} sends ${r.kind === "volume_over" ? "more" : "fewer"} than ` +
+      `${r.threshold === 1 ? "1 event" : nf.format(r.threshold) + " events"} in ${r.window_minutes === 1 ? "a minute" : r.window_minutes + " minutes"}`);
+  }
   const parts = [];
   parts.push(`${r.threshold === 1 ? "an event" : nf.format(r.threshold) + " events"}`);
   const conds = [];
@@ -3015,25 +3024,48 @@ function renderRules() {
 }
 function ruleDialog(r) {
   const editing = !!r;
-  r = r || { name: "", description: "", severity: 3, query: "", threat_only: false, group_by: "src_ip", threshold: 10, window_minutes: 5, enabled: true };
+  r = r || { name: "", description: "", kind: "match", severity: 3, query: "", threat_only: false, group_by: "src_ip", threshold: 10, window_minutes: 5, enabled: true };
+  const kind = r.kind || "match";
   $("rule-dlg-title").textContent = editing ? `Edit ${r.name}` : "New rule";
   $("r-name").value = r.name; $("r-desc").value = r.description || ""; $("r-query").value = r.query || "";
   $("r-severity").replaceChildren(...[1, 2, 3, 4, 5].map((n) => el("option", { value: String(n), textContent: SEV[n], selected: n === r.severity })));
   $("r-minsev").replaceChildren(el("option", { value: "", textContent: "Any severity" }),
     ...[2, 3, 4, 5].map((n) => el("option", { value: String(n), textContent: SEV[n], selected: n === r.min_severity })));
-  $("r-source").replaceChildren(el("option", { value: "", textContent: "Any source" }),
-    ...sourcesCache.map((x) => el("option", { value: String(x.id), textContent: x.name, selected: x.id === r.source_id })));
+  $("r-kind").value = kind;
+  let firstFill = true;
+  const fillSources = () => {
+    const keep = firstFill ? (r.source_id ? String(r.source_id) : "") : $("r-source").value;
+    firstFill = false;
+    const volume = $("r-kind").value !== "match";
+    $("r-source").replaceChildren(...(volume ? [] : [el("option", { value: "", textContent: "Any source" })]),
+      ...sourcesCache.map((x) => el("option", { value: String(x.id), textContent: x.name })));
+    $("r-source").value = keep;
+    if (volume && !$("r-source").value && sourcesCache.length) $("r-source").value = String(sourcesCache[0].id);
+  };
+  const showKind = () => {
+    const k = $("r-kind").value;
+    for (const n of document.querySelectorAll("#rule-form [data-match]")) n.hidden = k !== "match";
+    $("r-intro").textContent = k === "match"
+      ? "An alert opens when at least the given number of matching events arrive within the time window. Rules apply to events stored from now on."
+      : `An alert opens when the source has sent ${k === "volume_over" ? "more" : "fewer"} than the number of events within the last time window, counted by when the events happened. ` +
+        (k === "volume_under" ? "It waits a whole window after the rule is saved, or SIEMLite starts, before it says the source went quiet." : "It stays open while the source is still over, and keeps the highest count.");
+    $("r-source-label").textContent = k === "match" ? "From source" : "Source to watch";
+    $("r-threshold-label").textContent = k === "match" ? "At least" : k === "volume_over" ? "More than" : "Fewer than";
+    fillSources();
+  };
+  $("r-kind").onchange = showKind;
   $("r-threat").checked = !!r.threat_only; $("r-threshold").value = String(r.threshold); $("r-window").value = String(r.window_minutes);
-  $("r-group").value = r.group_by; $("r-enabled").checked = r.enabled;
+  $("r-group").value = r.group_by || ""; $("r-enabled").checked = r.enabled;
+  showKind();
   notice($("r-err"), "");
   const d = $("dlg-rule");
   $("rule-form").onsubmit = async (e) => {
     if (e.submitter && e.submitter.value === "cancel") return;
     e.preventDefault();
-    const body = { name: $("r-name").value.trim(), description: $("r-desc").value.trim(), severity: Number($("r-severity").value),
+    const body = { name: $("r-name").value.trim(), description: $("r-desc").value.trim(), severity: Number($("r-severity").value), kind: $("r-kind").value,
       query: $("r-query").value.trim(), threat_only: $("r-threat").checked, group_by: $("r-group").value,
       threshold: Number($("r-threshold").value), window_minutes: Number($("r-window").value), enabled: $("r-enabled").checked };
-    if ($("r-minsev").value) body.min_severity = Number($("r-minsev").value);
+    if ($("r-minsev").value && body.kind === "match") body.min_severity = Number($("r-minsev").value);
     if ($("r-source").value) body.source_id = Number($("r-source").value);
     try {
       await apiJSON(editing ? "/api/v1/rules/" + r.id : "/api/v1/rules", { method: editing ? "PUT" : "POST", json: body });

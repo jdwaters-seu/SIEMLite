@@ -8,7 +8,7 @@ import (
 )
 
 // schemaVersion is stored in PRAGMA user_version.
-const schemaVersion = 15
+const schemaVersion = 16
 
 // schemaStatements is the idempotent DDL applied on startup.
 //
@@ -290,6 +290,11 @@ var upgrades = map[int][]string{
 			SELECT 'Mass ingestion of late logs', '50 or more events more than 30 days old arrived from one source at once: old logs loaded in bulk, a sender replaying them, or its clock set wrong.', 4, '"mass ingestion"', id, '', 1, 60, 1,
 				CAST(strftime('%s','now') AS INTEGER) * 1000, CAST(strftime('%s','now') AS INTEGER) * 1000
 			FROM sources WHERE kind = 'internal'`,
+	},
+	// v16: rules that watch how much one source sends (more or fewer events
+	// than a number within a time) as well as rules that match events.
+	15: {
+		`ALTER TABLE alert_rules ADD COLUMN kind TEXT NOT NULL DEFAULT 'match' CHECK (kind IN ('match', 'volume_over', 'volume_under'))`,
 	},
 }
 

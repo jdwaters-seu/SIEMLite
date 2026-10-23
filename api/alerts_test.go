@@ -135,6 +135,9 @@ func TestRuleValidation(t *testing.T) {
 		{"missing source", with("source_id", 999)},
 		{"broken query", with("query", `"unterminated`)},
 		{"long description", with("description", strings.Repeat("x", 301))},
+		{"unknown kind", with("kind", "volume_sideways")},
+		{"volume rule without a source", with("kind", "volume_over")},
+		{"volume rule with a missing source", func() map[string]any { m := with("kind", "volume_under"); m["source_id"] = 999; return m }()},
 	} {
 		if got := e.call(root, "POST", "/api/v1/rules", tc.body, nil, nil); got != 400 {
 			t.Errorf("%s = %d, want 400", tc.name, got)
@@ -161,6 +164,26 @@ func TestRuleValidation(t *testing.T) {
 	}
 	if len(rules) != 6 || builtin == 0 { // five built-in rules and this one
 		t.Fatalf("rules = %d (built-in %d)", len(rules), builtin)
+	}
+	// A volume rule watches one source; it has no search or grouping, which are cleared.
+	src, err := e.repo.CreateTokenSource(context.Background(), "chatty", "hash-chatty", nil, false, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vr storage.Rule
+	vol := with("kind", "volume_under")
+	vol["name"], vol["source_id"], vol["threshold"] = "Chatty went quiet", src, 1
+	if got := e.call(root, "POST", "/api/v1/rules", vol, &vr, nil); got != 201 || vr.Kind != "volume_under" || vr.Query != "" || vr.GroupBy != "" ||
+		vr.SourceID == nil || *vr.SourceID != src || vr.Threshold != 1 || vr.WindowMinutes != 10 {
+		t.Fatalf("create volume rule = %d %+v", got, vr)
+	}
+	if got := e.call(root, "DELETE", fmt.Sprintf("/api/v1/rules/%d", vr.ID), nil, nil, nil); got != 200 {
+		t.Errorf("delete volume rule = %d", got)
+	}
+	rules = nil
+	e.call(root, "GET", "/api/v1/rules", nil, &rules, nil)
+	if len(rules) != 6 {
+		t.Fatalf("rules after the volume rule = %d", len(rules))
 	}
 	if got := e.call(root, "DELETE", fmt.Sprintf("/api/v1/rules/%d", builtin), nil, nil, nil); got != 400 {
 		t.Errorf("delete built-in = %d, want 400", got)

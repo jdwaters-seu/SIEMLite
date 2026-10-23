@@ -119,6 +119,21 @@ func (s *Server) validRule(w http.ResponseWriter, r *http.Request, ru *storage.R
 	default:
 		return bad("group by must be src_ip, dst_ip, user, host or nothing")
 	}
+	switch ru.Kind {
+	case "":
+		ru.Kind = storage.RuleMatch
+	case storage.RuleMatch, storage.RuleVolumeOver, storage.RuleVolumeUnder:
+	default:
+		return bad("kind must be match, volume_over or volume_under")
+	}
+	if ru.IsVolume() {
+		// A volume rule counts everything one source sends, so it has no
+		// search or grouping of its own.
+		if ru.SourceID == nil {
+			return bad("choose the source to watch")
+		}
+		ru.Query, ru.MinSeverity, ru.ThreatOnly, ru.GroupBy = "", nil, false, ""
+	}
 	if ru.SourceID != nil {
 		if _, err := s.deps.Repo.GetSource(r.Context(), *ru.SourceID); err != nil {
 			return bad("that source doesn't exist")

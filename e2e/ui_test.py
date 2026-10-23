@@ -431,6 +431,22 @@ def main(binary, loggen):
             w1 = first.bounding_box()["width"]
             check(abs(w1 - w0 - 40) < 3, f"dragging a column divider resizes the column ({w0:.0f}px to {w1:.0f}px)")
 
+            # A rule on how much one source sends: the form drops the search and
+            # grouping, asks for a source (no "any"), and the list reads it back.
+            page.goto(url + "#/alerts?tab=rules")
+            page.wait_for_selector("#rules-body tr")
+            page.click("#add-rule")
+            page.select_option("#r-kind", "volume_under")
+            check(not page.is_visible("#r-query") and not page.is_visible("#r-group"), "a volume rule hides the search and grouping")
+            check(page.locator("#r-source option", has_text="Any source").count() == 0, "a volume rule must name a source")
+            page.fill("#r-name", "Source went quiet")
+            page.fill("#r-threshold", "1")
+            page.fill("#r-window", "15")
+            page.click("#r-save")
+            page.locator("#rules-body tr", has_text="Source went quiet").wait_for()
+            sentence = page.locator("#rules-body tr", has_text="Source went quiet").locator(".rule-sentence").inner_text()
+            check("sends fewer than 1 event in 15 minutes" in sentence, f"the rule list reads a volume rule back ({sentence!r})")
+
             # Acknowledge and close an alert.
             page.goto(url + "#/alerts")
             page.wait_for_selector("#alerts-body tr")
