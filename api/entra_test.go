@@ -9,6 +9,7 @@ import (
 	"siemlite/pkg/search"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -641,5 +642,77 @@ func TestDisplayNameCantPassForAnotherAccount(t *testing.T) {
 		if u.Username == "cara@example.com" && u.DisplayName != "" {
 			t.Errorf("after the check, cara shows as %q", u.DisplayName)
 		}
+	}
+}
+
+// A browser (or something in front of it) can send the callback twice. The
+// code works once, so the repeat must not show up as a failed sign-in, and a
+// repeat that carries the cookie gets the same session.
+func TestRepeatedMicrosoftCallbackIsNotAFailure(t *testing.T) {
+	e := newEnv(t)
+	e.user("root", auth.RoleAdmin)
+	root := e.client()
+	e.login(root, "root", password)
+	e.ms.Set(entratest.AccessGroup, annOID, true)
+	if got := e.call(root, "PUT", "/api/v1/integrations/entra", entraForm(e), nil, nil); got != 200 {
+		t.Fatalf("save = %d", got)
+	}
+	failures := func() int {
+		var ev struct{ Events []struct{ Message string } }
+		e.call(root, "GET", "/api/v1/search?q=%22Microsoft%20failed%22&limit=20", nil, &ev, nil)
+		return len(ev.Events)
+	}
+
+	// At once, both with the flow cookie: each is sent to the same place, with
+	// the same session.
+	br := e.browser()
+	authURL, state := e.startSSO(br)
+	e.ms.Expect(authURL, annOID, "ann@example.com")
+	path := "/api/v1/auth/entra/callback?code=" + entratest.Code + "&state=" + state
+	var wg sync.WaitGroup
+	resps := make([]*http.Response, 2)
+	for i := range resps {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req, _ := http.NewRequest("GET", e.srv.URL+path, nil)
+			for _, c := range br.Jar.Cookies(req.URL) {
+				req.AddCookie(c)
+			}
+			resp, err := br.Do(req)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			resp.Body.Close()
+			resps[i] = resp
+		}()
+	}
+	wg.Wait()
+	var tokens []string
+	for _, r := range resps {
+		if r == nil {
+			t.FailNow()
+		}
+		if r.Header.Get("Location") != "/" {
+			t.Errorf("a callback went to %q", r.Header.Get("Location"))
+		}
+		if c := setCookie(r, auth.CookieName); c != nil {
+			tokens = append(tokens, c.Value)
+		}
+	}
+	if len(tokens) != 2 || tokens[0] != tokens[1] {
+		t.Errorf("sessions from the two callbacks = %d, same = %v", len(tokens), len(tokens) == 2 && tokens[0] == tokens[1])
+	}
+
+	// Again afterwards, without the flow cookie (the first answer cleared it).
+	later := e.browser()
+	resp := e.get(later, path)
+	if resp.Header.Get("Location") != "/" || setCookie(resp, auth.CookieName) != nil {
+		t.Errorf("a late repeat: %q, session cookie %v", resp.Header.Get("Location"), setCookie(resp, auth.CookieName) != nil)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n := failures(); n != 0 {
+		t.Errorf("%d failed sign-ins recorded for one sign-in", n)
 	}
 }
