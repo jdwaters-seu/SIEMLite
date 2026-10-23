@@ -372,3 +372,41 @@ func TestVolumeUnderWaitsAWholeWindow(t *testing.T) {
 		t.Fatalf("alerted straight after a restart: %+v", got)
 	}
 }
+
+// The count is one source's events in the window, by event time: another
+// source's events, and events outside the window (a late batch stored under
+// its real date, or one dated ahead), don't count.
+func TestCountSourceEvents(t *testing.T) {
+	repo, w, _ := setup(t)
+	ctx := context.Background()
+	a, _ := repo.CreateTokenSource(ctx, "a", "ka", nil, false, 1)
+	b, _ := repo.CreateTokenSource(ctx, "b", "kb", nil, false, 1)
+	now := time.Now()
+	send := func(src int64, at time.Time, n int) {
+		for i := 0; i < n; i++ {
+			if err := w.SubmitWith(ctx, event(at.Add(time.Duration(i)*time.Millisecond), "x", "10.0.0.1"), ingest.SubmitOptions{SourceID: src}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	send(a, now.Add(-2*time.Minute), 3)   // in the window
+	send(a, now.Add(-20*time.Minute), 4)  // before it
+	send(a, now.Add(-40*24*time.Hour), 5) // a late batch, in an older day
+	send(b, now.Add(-2*time.Minute), 7)   // another source
+	w.Drain(ctx)
+	from, to := now.Add(-10*time.Minute).UnixMilli(), now.UnixMilli()
+	for _, tc := range []struct {
+		src  int64
+		want int64
+	}{{a, 3}, {b, 7}, {a + b + 100, 0}} {
+		if got, err := repo.CountSourceEvents(ctx, tc.src, from, to); err != nil || got != tc.want {
+			t.Errorf("source %d: %d events, %v (want %d)", tc.src, got, err, tc.want)
+		}
+	}
+	if got, _ := repo.CountSourceEvents(ctx, a, now.Add(-30*time.Minute).UnixMilli(), to); got != 7 {
+		t.Errorf("a wider window = %d, want 7", got)
+	}
+	if got, _ := repo.CountSourceEvents(ctx, a, now.Add(-41*24*time.Hour).UnixMilli(), to); got != 12 {
+		t.Errorf("a window reaching the late batch = %d, want 12", got)
+	}
+}
