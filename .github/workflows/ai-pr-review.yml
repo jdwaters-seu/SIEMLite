@@ -44,173 +44,173 @@ jobs:
           REPO_NAME: ${{ github.repository }}
         run: |
           python3 - << 'EOF'
-          import os
-          import sys
-          import json
-          import urllib.request
-          import urllib.error
-          from concurrent.futures import ThreadPoolExecutor
+                  import os
+                  import sys
+                  import json
+                  import urllib.request
+                  import urllib.error
+                  from concurrent.futures import ThreadPoolExecutor
 
-          api_key = os.environ.get("OPENROUTER_API_KEY")
-          repo = os.environ.get("REPO_NAME", "")
-          pr_num = os.environ.get("PR_NUMBER", "")
-          pr_title = os.environ.get("PR_TITLE", "")
-          pr_body = os.environ.get("PR_BODY", "")
+                  api_key = os.environ.get("OPENROUTER_API_KEY")
+                  repo = os.environ.get("REPO_NAME", "")
+                  pr_num = os.environ.get("PR_NUMBER", "")
+                  pr_title = os.environ.get("PR_TITLE", "")
+                  pr_body = os.environ.get("PR_BODY", "")
 
-          if not api_key:
-              print("Missing OPENROUTER_API_KEY secret.")
-              sys.exit(1)
+                  if not api_key:
+                      print("Missing OPENROUTER_API_KEY secret.")
+                      sys.exit(1)
 
-          with open("pr_diff.patch", "r", encoding="utf-8", errors="ignore") as f:
-              diff_text = f.read()
+                  with open("pr_diff.patch", "r", encoding="utf-8", errors="ignore") as f:
+                      diff_text = f.read()
 
-          # Read Semgrep findings
-          semgrep_context = "No deterministic static issues found."
-          if os.path.exists("semgrep_results.json"):
-              try:
-                  with open("semgrep_results.json") as f:
-                      data = json.load(f)
-                      matches = [
-                          f"[{m['check_id']}] {m['path']}:{m['start']['line']} - {m['extra']['message']}"
-                          for m in data.get("results", [])
-                      ]
-                      if matches:
-                          semgrep_context = "\n".join(matches[:15])  # top 15 findings
-              except Exception:
-                  pass
+                  # Read Semgrep findings
+                  semgrep_context = "No deterministic static issues found."
+                  if os.path.exists("semgrep_results.json"):
+                      try:
+                          with open("semgrep_results.json") as f:
+                              data = json.load(f)
+                              matches = [
+                                  f"[{m['check_id']}] {m['path']}:{m['start']['line']} - {m['extra']['message']}"
+                                  for m in data.get("results", [])
+                              ]
+                              if matches:
+                                  semgrep_context = "\n".join(matches[:15])  # top 15 findings
+                      except Exception:
+                          pass
 
-          # Cap diff to fit comfortably within free-tier payload budgets
-          MAX_CHARS = 80000
-          if len(diff_text) > MAX_CHARS:
-              diff_text = diff_text[:MAX_CHARS] + "\n\n... [Diff truncated due to size limits] ..."
+                  # Cap diff to fit comfortably within free-tier payload budgets
+                  MAX_CHARS = 80000
+                  if len(diff_text) > MAX_CHARS:
+                      diff_text = diff_text[:MAX_CHARS] + "\n\n... [Diff truncated due to size limits] ..."
 
-          def query_openrouter(model_id, messages, temperature=0.7, timeout=120):
-              payload = {
-                  "model": model_id,
-                  "messages": messages,
-                  "temperature": temperature
-              }
-              req = urllib.request.Request(
-                  "https://openrouter.ai/api/v1/chat/completions",
-                  data=json.dumps(payload).encode("utf-8"),
-                  headers={
-                      "Authorization": f"Bearer {api_key}",
-                      "Content-Type": "application/json",
-                      "HTTP-Referer": f"https://github.com/{repo}",
-                      "X-Title": "GitHub Ensemble PR Reviewer"
-                  }
-              )
-              try:
-                  with urllib.request.urlopen(req, timeout=timeout) as response:
-                      res_data = json.loads(response.read().decode("utf-8"))
-                      return res_data["choices"][0]["message"]["content"]
-              except urllib.error.HTTPError as e:
-                  err_msg = e.read().decode("utf-8", errors="ignore")
-                  print(f"Error querying {model_id} ({e.code}): {err_msg}")
-                  return f"⚠️ Analysis skipped due to API error ({e.code})."
-              except Exception as e:
-                  print(f"Exception querying {model_id}: {e}")
-                  return f"⚠️ Analysis error: {str(e)}"
+                  def query_openrouter(model_id, messages, temperature=0.7, timeout=120):
+                      payload = {
+                          "model": model_id,
+                          "messages": messages,
+                          "temperature": temperature
+                      }
+                      req = urllib.request.Request(
+                          "https://openrouter.ai/api/v1/chat/completions",
+                          data=json.dumps(payload).encode("utf-8"),
+                          headers={
+                              "Authorization": f"Bearer {api_key}",
+                              "Content-Type": "application/json",
+                              "HTTP-Referer": f"https://github.com/{repo}",
+                              "X-Title": "GitHub Ensemble PR Reviewer"
+                          }
+                      )
+                      try:
+                          with urllib.request.urlopen(req, timeout=timeout) as response:
+                              res_data = json.loads(response.read().decode("utf-8"))
+                              return res_data["choices"][0]["message"]["content"]
+                      except urllib.error.HTTPError as e:
+                          err_msg = e.read().decode("utf-8", errors="ignore")
+                          print(f"Error querying {model_id} ({e.code}): {err_msg}")
+                          return f"⚠️ Analysis skipped due to API error ({e.code})."
+                      except Exception as e:
+                          print(f"Exception querying {model_id}: {e}")
+                          return f"⚠️ Analysis error: {str(e)}"
 
-          # Step 1: Base analysis prompt for the two inspection models
-          analysis_prompt = f"""You are a lead architect conducting a deep code review.
+                  # Step 1: Base analysis prompt for the two inspection models
+                  analysis_prompt = f"""You are a lead architect conducting a deep code review.
 
-PR Context:
-- Title: {pr_title}
-- Description: {pr_body}
+                  PR Context:
+                  - Title: {pr_title}
+                  - Description: {pr_body}
 
-Automated SAST Tool Findings:
-{semgrep_context}
+                  Automated SAST Tool Findings:
+                  {semgrep_context}
 
-Analyze this unified git diff for:
-1. Concrete logic bugs, null pointer/undefined dereferences, or broken control flows.
-2. Concurrency, memory leak, or performance issues.
-3. Security vulnerabilities and exposed sensitive data.
-4. Unhandled error states or edge cases.
+                  Analyze this unified git diff for:
+                  1. Concrete logic bugs, null pointer/undefined dereferences, or broken control flows.
+                  2. Concurrency, memory leak, or performance issues.
+                  3. Security vulnerabilities and exposed sensitive data.
+                  4. Unhandled error states or edge cases.
 
-Instructions:
-Cross-reference the developer's stated intent in the PR description with the actual changes.
-Investigate the SAST findings above and determine if they represent real exploits or false alarms.
-Check for architectural drift, missing test assertions, and boundary-condition failures.
+                  Instructions:
+                  Cross-reference the developer's stated intent in the PR description with the actual changes.
+                  Investigate the SAST findings above and determine if they represent real exploits or false alarms.
+                  Check for architectural drift, missing test assertions, and boundary-condition failures.
 
-Strict guidelines:
-- Cite the specific file and line numbers where an issue exists.
-- Offer a concise, practical code fix.
-- Do NOT include stylistic or subjective formatting comments.
-- If the diff looks sound, confirm that no critical issues were detected.
+                  Strict guidelines:
+                  - Cite the specific file and line numbers where an issue exists.
+                  - Offer a concise, practical code fix.
+                  - Do NOT include stylistic or subjective formatting comments.
+                  - If the diff looks sound, confirm that no critical issues were detected.
 
-Git Diff:
-```diff
-{diff_text}
-```
-"""
+                  Git Diff:
+                  ```diff
+                  {diff_text}
+                  ```
+                  """
 
-          messages = [
-              {"role": "system", "content": "You are an automated, bug-focused code reviewer."},
-              {"role": "user", "content": analysis_prompt}
-          ]
+                  messages = [
+                      {"role": "system", "content": "You are an automated, bug-focused code reviewer."},
+                      {"role": "user", "content": analysis_prompt}
+                  ]
 
-          # Query both analyzer models concurrently to minimize workflow duration
-          print("Querying analyzer models in parallel...")
-          with ThreadPoolExecutor(max_workers=2) as executor:
-              future_super_vl = executor.submit(
-                  query_openrouter,
-                  "nvidia/nemotron-3.5-super-vl:free",
-                  messages,
-                  1.0,
-                  120
-              )
-              future_ultra = executor.submit(
-                  query_openrouter,
-                  "nvidia/nemotron-3-ultra-550b-a55b:free",
-                  messages,
-                  1.0,
-                  120
-              )
-              report_super_vl = future_super_vl.result()
-              report_ultra = future_ultra.result()
+                  # Query both analyzer models concurrently to minimize workflow duration
+                  print("Querying analyzer models in parallel...")
+                  with ThreadPoolExecutor(max_workers=2) as executor:
+                      future_super_vl = executor.submit(
+                          query_openrouter,
+                          "nvidia/nemotron-3.5-super-vl:free",
+                          messages,
+                          1.0,
+                          120
+                      )
+                      future_ultra = executor.submit(
+                          query_openrouter,
+                          "nvidia/nemotron-3-ultra-550b-a55b:free",
+                          messages,
+                          1.0,
+                          120
+                      )
+                      report_super_vl = future_super_vl.result()
+                      report_ultra = future_ultra.result()
 
-          # Step 2: Synthesis prompt for Nemotron 3.5 Lightning
-          synthesis_prompt = f"""You are a lead code architect synthesizing the outputs of two independent code inspection engines into a single, authoritative pull request review comment.
+                  # Step 2: Synthesis prompt for Nemotron 3.5 Lightning
+                  synthesis_prompt = f"""You are a lead code architect synthesizing the outputs of two independent code inspection engines into a single, authoritative pull request review comment.
 
-          ### Report from Analyzer 1 (Nemotron 3.5 Super VL):
-          {report_super_vl}
+                  ### Report from Analyzer 1 (Nemotron 3.5 Super VL):
+                  {report_super_vl}
 
-          ### Report from Analyzer 2 (Nemotron 3 Ultra 550B):
-          {report_ultra}
+                  ### Report from Analyzer 2 (Nemotron 3 Ultra 550B):
+                  {report_ultra}
 
-          Instructions for the final comment:
-          1. **Cross-validate**: Discard hallucinations, false alarms, and stylistic preferences. Focus on actionable bugs.
-          2. **Highlight Consensus**: If both models identified the same issue, mark it as high confidence.
-          3. **Structure**:
-             - **Summary**: 1-2 sentence overall health check of the PR.
-             - **Actionable Findings**: Grouped by file and line, explaining the bug and showing the suggested fix.
-             - If no bugs or risks were confirmed by either engine, clearly state that the changes look clean and ready.
-          4. Maintain a clear, collaborative, engineering-focused tone.
-          """
+                  Instructions for the final comment:
+                  1. **Cross-validate**: Discard hallucinations, false alarms, and stylistic preferences. Focus on actionable bugs.
+                  2. **Highlight Consensus**: If both models identified the same issue, mark it as high confidence.
+                  3. **Structure**:
+                     - **Summary**: 1-2 sentence overall health check of the PR.
+                     - **Actionable Findings**: Grouped by file and line, explaining the bug and showing the suggested fix.
+                     - If no bugs or risks were confirmed by either engine, clearly state that the changes look clean and ready.
+                  4. Maintain a clear, collaborative, engineering-focused tone.
+                  """
 
-          print("Synthesizing final comment with Nemotron 3.5 Lightning...")
-          final_review = query_openrouter(
-              "nvidia/nemotron-3.5-lightning:free",
-              [
-                  {"role": "system", "content": "You are an expert review consolidator that produces clear, actionable GitHub PR feedback."},
-                  {"role": "user", "content": synthesis_prompt}
-              ],
-              temperature=0.4,
-              timeout=90
-          )
+                  print("Synthesizing final comment with Nemotron 3.5 Lightning...")
+                  final_review = query_openrouter(
+                      "nvidia/nemotron-3.5-lightning:free",
+                      [
+                          {"role": "system", "content": "You are an expert review consolidator that produces clear, actionable GitHub PR feedback."},
+                          {"role": "user", "content": synthesis_prompt}
+                      ],
+                      temperature=0.4,
+                      timeout=90
+                  )
 
-          final_body = (
-              "## 🤖 Automated Code Review\n\n"
-              f"{final_review}\n\n"
-              "---\n"
-              "*Consolidated by `nvidia/nemotron-3.5-lightning:free` from independent analyses by "
-              "`nvidia/nemotron-3.5-super-vl:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`.*"
-          )
+                  final_body = (
+                      "## 🤖 Automated Code Review\n\n"
+                      f"{final_review}\n\n"
+                      "---\n"
+                      "*Consolidated by `nvidia/nemotron-3.5-lightning:free` from independent analyses by "
+                      "`nvidia/nemotron-3.5-super-vl:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`.*"
+                  )
 
-          with open("review_comment.md", "w", encoding="utf-8") as out:
-              out.write(final_body)
-          EOF
+                  with open("review_comment.md", "w", encoding="utf-8") as out:
+                      out.write(final_body)
+                  EOF
 
       - name: Post Comment to PR
         if: steps.get_diff.outputs.empty == 'false'
