@@ -38,7 +38,7 @@ jobs:
       - name: Run Multi-Model Review Pipeline
         if: steps.get_diff.outputs.empty == 'false'
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          NVIDIA_API_KEY: ${{ secrets.NVIDIA_API_KEY }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO_NAME: ${{ github.repository }}
           PR_TITLE: ${{ github.event.pull_request.title }}
@@ -52,14 +52,14 @@ jobs:
           import urllib.error
           from concurrent.futures import ThreadPoolExecutor
 
-          api_key = os.environ.get("OPENROUTER_API_KEY")
+          api_key = os.environ.get("NVIDIA_API_KEY")
           repo = os.environ.get("REPO_NAME", "")
           pr_num = os.environ.get("PR_NUMBER", "")
           pr_title = os.environ.get("PR_TITLE", "No title provided")
           pr_body = os.environ.get("PR_BODY", "No description provided")
 
           if not api_key:
-              print("Missing OPENROUTER_API_KEY secret.")
+              print("Missing NVIDIA_API_KEY secret.")
               sys.exit(1)
 
           with open("pr_diff.patch", "r", encoding="utf-8", errors="ignore") as f:
@@ -91,28 +91,26 @@ jobs:
                   try:
                       with open(ctx_file, "r", encoding="utf-8", errors="ignore") as f:
                           content = f.read()
-                          # Keep it reasonably short
                           if len(content) > 2000:
                               content = content[:2000] + "\n\n... [truncated] ..."
                           project_context += f"\n### {ctx_file}\n{content}\n"
                   except Exception:
                       pass
-                  break  # Just grab the first one we find
+                  break
 
-          def query_openrouter(model_id, messages, temperature=0.7, timeout=120):
+          def query_nim(model_id, messages, temperature=0.7, timeout=120):
               payload = {
                   "model": model_id,
                   "messages": messages,
                   "temperature": temperature
               }
               req = urllib.request.Request(
-                  "https://openrouter.ai/api/v1/chat/completions",
+                  "https://integrate.api.nvidia.com/v1/chat/completions",
                   data=json.dumps(payload).encode("utf-8"),
                   headers={
                       "Authorization": f"Bearer {api_key}",
                       "Content-Type": "application/json",
-                      "HTTP-Referer": f"https://github.com/{repo}",
-                      "X-Title": "GitHub Ensemble PR Reviewer"
+                      "Accept": "application/json"
                   }
               )
               try:
@@ -162,36 +160,43 @@ jobs:
               {"role": "user", "content": analysis_prompt}
           ]
 
-          print("Querying analyzer models in parallel...")
-          with ThreadPoolExecutor(max_workers=2) as executor:
-              future_super_vl = executor.submit(
-                  query_openrouter,
-                  "nvidia/nemotron-3.5-super-vl:free",
-                  messages,
-                  1.0,
-                  120
-              )
-              future_ultra = executor.submit(
-                  query_openrouter,
-                  "nvidia/nemotron-3-ultra-550b-a55b:free",
-                  messages,
-                  1.0,
-                  120
-              )
-              report_super_vl = future_super_vl.result()
-              report_ultra = future_ultra.result()
+          # Define all analyzer models to run in parallel
+          ANALYZER_MODELS = [
+              "nvidia/nemotron-3.5-super-vl-120b-a12b",
+              "nvidia/nemotron-3.5-lightning-30b-a3b",
+              "nvidia/nemotron-3-ultra-550b-a55b",
+              "z-ai/glm-5.3-flash",
+              "meta/muse-glimmer-30b",
+          ]
+
+          print(f"Querying {len(ANALYZER_MODELS)} analyzer models in parallel...")
+          reports = {}
+          with ThreadPoolExecutor(max_workers=len(ANALYZER_MODELS)) as executor:
+              future_to_model = {
+                  executor.submit(query_nim, model, messages, 1.0, 120): model
+                  for model in ANALYZER_MODELS
+              }
+              for future in future_to_model:
+                  model_name = future_to_model[future]
+                  reports[model_name] = future.result()
+
+          # Build the consolidated prompt dynamically
+          formatted_reports = "\n\n".join(
+              [f"### Report from {m}:\n{text}" for m, text in reports.items()]
+          )
 
           # Synthesis prompt
-          synthesis_prompt = f"""You are a Principal Software Architect synthesizing two automated code review reports into an executive GitHub PR review comment.
+          synthesis_prompt = f"""You are a Principal Software Architect synthesizing {len(ANALYZER_MODELS)} automated code review reports into an executive GitHub PR review comment.
 
           ### PR Context:
           - **Title**: {pr_title}
           - **Description**: {pr_body}
 
           ### Raw Engine Reports:
-          Report 1: {report_super_vl}
-          Report 2: {report_ultra}
-          SAST: {semgrep_findings}
+          {formatted_reports}
+
+          ### Static Analysis Findings (Semgrep):
+          {semgrep_findings}
 
           ### Output Rules & GitHub Markdown Requirements:
           1. **Never place multiline code blocks inside table cells** (this breaks GitHub Markdown tables). Use tables ONLY for brief 1-line summaries.
@@ -217,9 +222,9 @@ jobs:
           ```
           """
 
-          print("Synthesizing final comment with Nemotron 3.5 Lightning...")
-          final_review = query_openrouter(
-              "nvidia/nemotron-3.5-lightning:free",
+          print("Synthesizing final comment with Nemotron 3.5 Bolt E4B...")
+          final_review = query_nim(
+              "nvidia/nemotron-3.5-bolt-e4b",
               [
                   {"role": "system", "content": "You are an expert review consolidator that produces clear, actionable GitHub PR feedback."},
                   {"role": "user", "content": synthesis_prompt}
@@ -232,8 +237,9 @@ jobs:
               "## 🤖 Automated Code Review\n\n"
               f"{final_review}\n\n"
               "---\n"
-              "*Consolidated by `nvidia/nemotron-3.5-lightning:free` from independent analyses by "
-              "`nvidia/nemotron-3.5-super-vl:free` and `nvidia/nemotron-3-ultra-550b-a55b:free`.*"
+              "*Consolidated by `nvidia/nemotron-3.5-bolt-e4b` from independent analyses by "
+              "`nvidia/nemotron-3.5-super-vl-120b-a12b`, `nvidia/nemotron-3.5-lightning-30b-a3b`, "
+              "`nvidia/nemotron-3-ultra-550b-a55b`, `z-ai/glm-5.3-flash`, and `meta/muse-glimmer-30b`.*"
           )
 
           with open("review_comment.md", "w", encoding="utf-8") as out:
