@@ -257,11 +257,21 @@ func TestSignInWithMicrosoft(t *testing.T) {
 	var found bool
 	for !found && time.Now().Before(deadline) {
 		var ev struct {
-			Events []struct{ Message string }
+			Events []struct {
+				Message     string
+				UserName    string `json:"user_name"`
+				UserDisplay string `json:"user_display"`
+			}
 		}
 		e.call(root, "GET", "/api/v1/search?q=Microsoft&limit=20", nil, &ev, nil)
 		for _, x := range ev.Events {
-			found = found || strings.Contains(x.Message, "Test Person (ann@example.com) signed in with Microsoft")
+			if strings.Contains(x.Message, "Test Person (ann@example.com) signed in with Microsoft") {
+				found = true
+				// The User column shows the name, and the account name stays for filtering.
+				if x.UserName != "ann@example.com" || x.UserDisplay != "Test Person" {
+					t.Errorf("user = %q, display = %q", x.UserName, x.UserDisplay)
+				}
+			}
 		}
 		time.Sleep(30 * time.Millisecond)
 	}
