@@ -537,7 +537,32 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "search failed")
 		return
 	}
+	s.showDisplayNames(r.Context(), res.Events)
 	writeJSON(w, http.StatusOK, res)
+}
+
+// showDisplayNames adds, to each event whose user is an account with a display
+// name, that name (UserDisplay), so the log shows the person and not only the
+// account name. The events keep the account name for filtering.
+func (s *Server) showDisplayNames(ctx context.Context, events []storage.Record) {
+	seen := map[string]bool{}
+	var names []string
+	for _, ev := range events {
+		if ev.UserName != "" && !seen[ev.UserName] {
+			seen[ev.UserName] = true
+			names = append(names, ev.UserName)
+		}
+	}
+	display, err := s.deps.Repo.DisplayNames(ctx, names)
+	if err != nil {
+		s.deps.Logger.Warn("couldn't look up display names", "err", err)
+		return
+	}
+	for i := range events {
+		if d := display[events[i].UserName]; d != "" && d != events[i].UserName {
+			events[i].UserDisplay = d
+		}
+	}
 }
 
 type loginRequest struct {

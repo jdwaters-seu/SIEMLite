@@ -38,6 +38,9 @@ type Record struct {
 	Threat     bool   `json:"threat,omitempty"` // matched a threat intel indicator
 	SourceID   int64  `json:"source_id,omitempty"`
 	SourceName string `json:"source_name,omitempty"` // read-only: the source's current name
+	// UserDisplay is read-only: the display name of the account that UserName
+	// is the username of (a Microsoft account's name), when it has one.
+	UserDisplay string `json:"user_display,omitempty"`
 	// Fields holds extra values a parser extracted, as a JSON object.
 	Fields json.RawMessage `json:"fields,omitempty"`
 	// Enrichment is the JSON document of GeoIP/ASN and threat intel context.

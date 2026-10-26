@@ -60,6 +60,33 @@ func (r *Repository) GetUserForLogin(ctx context.Context, username string) (*Use
 	return r.userWithHash(ctx, `username = ?`, username)
 }
 
+// DisplayNames returns the display names of the accounts with these usernames
+// (only those that have one), for showing events by the person's name.
+func (r *Repository) DisplayNames(ctx context.Context, usernames []string) (map[string]string, error) {
+	out := map[string]string{}
+	if len(usernames) == 0 {
+		return out, nil
+	}
+	args := make([]any, len(usernames))
+	for i, u := range usernames {
+		args[i] = u
+	}
+	rows, err := r.db.Read.QueryContext(ctx, `SELECT username, display_name FROM users WHERE display_name <> '' AND username IN (?`+
+		strings.Repeat(",?", len(usernames)-1)+`)`, args...)
+	if err != nil {
+		return nil, fmt.Errorf("display names: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var u, d string
+		if err := rows.Scan(&u, &d); err != nil {
+			return nil, err
+		}
+		out[u] = d
+	}
+	return out, rows.Err()
+}
+
 // GetUserWithHash returns the user and their password hash, by ID.
 func (r *Repository) GetUserWithHash(ctx context.Context, id int64) (*User, string, error) {
 	return r.userWithHash(ctx, `id = ?`, id)
