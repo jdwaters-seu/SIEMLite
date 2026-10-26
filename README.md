@@ -53,7 +53,7 @@ sends ten realistic test events a second, attacks included. See [Test logs](#tes
 ### Run with Docker
 
 The web UI is built into the binary, so this is a single container. Every release is published as an image for x86-64
-and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.24.1` in `.env` to use it, or leave it out to build from the
+and ARM64: set `SIEMLITE_IMAGE=ghcr.io/justwaters/siemlite:v0.25` in `.env` to use it, or leave it out to build from the
 checkout. Either way, start and update with `./update.sh`:
 
 ```sh
@@ -486,6 +486,53 @@ While an alert is open or acknowledged, more matching events add to it instead o
 the next match raises a new alert. Built-in rules can be edited or switched off but not deleted. The [log
 generator](#test-logs)'s attacks raise alerts too.
 
+## AI agents (MCP)
+
+AI agents can connect to SIEMLite through the [Model Context Protocol](https://modelcontextprotocol.io): the endpoint is
+`POST https://<your SIEMLite>/mcp` (streamable HTTP, JSON answers), and any MCP client can use it. Turn it on and make tokens on
+the **Integrations** page under **AI agents (MCP)**. Each token has a name and a level, is shown once, and can be removed at any
+time (the agent using it is refused straight away). The switch on the card keeps all agents out while leaving the tokens in place.
+
+| Level | Tools |
+|---|---|
+| **Read-only** | `search_events` (the Database search with its filters, newest first, 200 at most; the original line only with `include_raw`), `get_stats` (the dashboard's numbers for the last N hours), `list_alerts`, `list_rules`, `list_sources` |
+| **Analyst** | the above, and `set_alert_status` (acknowledge, close or reopen an alert) |
+| **Admin** | the above, and `list_parsers`, `get_parser`, `draft_parser`, `test_parser`, `save_parser`, `delete_parser`, `create_source`, `update_source`, `delete_source` |
+
+Agents can't reach users, passwords, sign-in settings, Microsoft sign-in, certificates, email, backups, retention or alert rules
+(they can read rules). A tool the token's level doesn't allow isn't listed, and calling it by name is refused. The tools run the
+same checks as the web pages, so a bad search, a missing name or a parser that doesn't compile comes back as a message the agent
+can act on. To connect Claude Code:
+
+```
+claude mcp add --transport http siemlite https://siemlite.example.com/mcp --header "Authorization: Bearer slmcp_..."
+```
+
+For the Gemini CLI: `gemini mcp add --transport http --header "Authorization: Bearer slmcp_..." siemlite https://siemlite.example.com/mcp`
+(or `"httpUrl"` and `"headers"` in its `settings.json`). For OpenCode, add the server to `opencode.json`:
+
+```json
+{ "mcp": { "siemlite": { "type": "remote", "url": "https://siemlite.example.com/mcp", "enabled": true,
+                          "headers": { "Authorization": "Bearer slmcp_..." } } } }
+```
+
+Other clients take the same URL and an `Authorization: Bearer slmcp_...` header. The dialog shown with a new token has ready-to-copy
+snippets for all of these, with the token filled in. With a self-signed certificate the agent's computer must trust `siemlite.crt`.
+
+Things to know:
+
+- Tokens are stored only as hashes. They start with `slmcp_` so secret scanners can find them, and they work only on `/mcp`: not on
+  the REST API, and an ingest token or a signed-in session doesn't work on `/mcp`.
+- Everything an agent changes is in the [audit log](#audit-log) as `agent:<token name> ...` with the field `via=mcp`, and making
+  or removing a token is recorded too. Bad tokens are recorded and lock the address out like wrong passwords do; a request that
+  names another site in `Origin` is refused.
+- Log text comes from outside systems, so an agent reading it can be misled by what it says. SIEMLite tells agents to treat it as
+  data, but give each agent the lowest level it needs. A read-only token can't change anything.
+
+The same settings are in the API (admin only): `GET /api/v1/integrations/mcp`, `POST /api/v1/integrations/mcp/tokens`
+(`{"name", "level"}`; the answer holds the token once), `DELETE /api/v1/integrations/mcp/tokens/{id}`, and
+`POST /api/v1/integrations/{id}/enabled` with `mcp` as the id (`{"enabled": false}`).
+
 ## Keeping events
 
 SIEMLite keeps events for two years by default. Change it on the **System** page (**Keep events**: 30 days, 90 days, 1 year,
@@ -807,6 +854,7 @@ devices ──syslog UDP/TCP/TLS──▶ syslogd ┴─▶ enrich (GeoIP, threa
 - **`pkg/search`**: combines time window, OCSF filters and FTS5.
 - **`pkg/retention`**: deletes expired days' files, and older events from the day the cutoff falls in.
 - **`pkg/alerts`**: the alert engine: runs each rule over the events since its last check.
+- **`pkg/mcp`**: a small Model Context Protocol server (JSON-RPC over HTTP, tools filtered by access level); **`pkg/agents`**: AI agent tokens and the "AI agents (MCP)" integration; the tools themselves are in `api/mcp.go` and run the REST handlers as the token.
 - **`pkg/audit`**: writes the audit log as INTERNAL events.
 - **`pkg/auth`**: access tokens, users, roles, source limits, sessions and permission checks.
 - **`api`**: HTTPS server and endpoints. **`web`**: the embedded UI.

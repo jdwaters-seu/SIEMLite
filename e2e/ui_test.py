@@ -447,6 +447,50 @@ def main(binary, loggen):
             sentence = page.locator("#rules-body tr", has_text="Source went quiet").locator(".rule-sentence").inner_text()
             check("sends fewer than 1 event in 15 minutes" in sentence, f"the rule list reads a volume rule back ({sentence!r})")
 
+            # An AI agent token: make it on the Integrations page, see it once, and
+            # connect to /mcp with it as an analyst.
+            page.goto(url + "#/integrations")
+            page.wait_for_selector("#int-mcp .integ-toggle")
+            page.click("#int-mcp .integ-toggle")
+            page.fill("#mcp-name", "e2e agent")
+            page.select_option("#mcp-level", "analyst")
+            page.click("#mcp-create")
+            page.wait_for_selector("#dlg-agent[open]")
+            agent_token = page.input_value("#ag-token")
+            page.click('#ag-tabs button[data-agent="claude"]')
+            command = page.inner_text("#ag-code-0")
+            check(agent_token.startswith("slmcp_") and "claude mcp add --transport http siemlite" in command and agent_token in command,
+                  "a new agent token is shown with a ready-to-run command")
+            page.click('#ag-tabs button[data-agent="gemini"]')
+            gemini = page.inner_text("#ag-code-0") + page.inner_text("#ag-code-1")
+            page.click('#ag-tabs button[data-agent="opencode"]')
+            opencode = page.inner_text("#ag-code-0")
+            check("gemini mcp add --transport http" in gemini and '"httpUrl"' in gemini and agent_token in gemini,
+                  "the dialog has the Gemini CLI command and settings.json")
+            check('"type": "remote"' in opencode and '"mcp"' in opencode and agent_token in opencode, "the dialog has the OpenCode config")
+            page.click("#dlg-agent .btn-primary")
+            page.locator("#mcp-body tr", has_text="e2e agent").wait_for()
+            check("Analyst" in page.locator("#mcp-body tr", has_text="e2e agent").inner_text(), "the token is listed with its level")
+            import json as _json, ssl as _ssl, urllib.request as _rq
+            def mcp_call(method, params=None):
+                body = _json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}).encode()
+                req = _rq.Request(url.rstrip("/") + "/mcp", data=body, headers={"Authorization": "Bearer " + agent_token, "Content-Type": "application/json"})
+                return _json.load(_rq.urlopen(req, context=_ssl._create_unverified_context()))
+            tool_names = [t["name"] for t in mcp_call("tools/list")["result"]["tools"]]
+            check("search_events" in tool_names and "set_alert_status" in tool_names and "create_source" not in tool_names,
+                  "an analyst token lists the analyst tools and not the admin ones")
+            found = mcp_call("tools/call", {"name": "search_events", "arguments": {"q": "failed", "limit": 3}})["result"]
+            check(not found["isError"] and "events" in found["content"][0]["text"], "an agent can search events through /mcp")
+            page.locator("#mcp-body tr", has_text="e2e agent").get_by_role("button", name="Remove").click()
+            page.click("#c-ok")
+            page.locator("#mcp-body tr", has_text="e2e agent").wait_for(state="detached")
+            try:
+                mcp_call("tools/list")
+                refused = False
+            except Exception:
+                refused = True
+            check(refused, "a removed token is refused")
+
             # Acknowledge and close an alert.
             page.goto(url + "#/alerts")
             page.wait_for_selector("#alerts-body tr")

@@ -37,8 +37,9 @@ const (
 type Kind string
 
 const (
-	KindKey  Kind = "key"
-	KindUser Kind = "user"
+	KindKey   Kind = "key"
+	KindUser  Kind = "user"
+	KindAgent Kind = "agent" // an AI agent on the MCP endpoint (never on the REST API)
 )
 
 // User roles.
@@ -49,6 +50,9 @@ const (
 
 // KeyPrefix makes keys recognizable to secret scanners.
 const KeyPrefix = "slk_"
+
+// AgentKeyPrefix does the same for AI agent tokens.
+const AgentKeyPrefix = "slmcp_"
 
 var (
 	ErrMissing = errors.New("authentication required")
@@ -102,6 +106,13 @@ func (p *Principal) Can(perm Permission) bool {
 		case RoleStandard:
 			return perm == PermSearch
 		}
+	case KindAgent: // Role holds the token's level
+		switch p.Role {
+		case storage.AgentAdmin:
+			return perm == PermSearch || perm == PermAdmin
+		case storage.AgentRead, storage.AgentAnalyst:
+			return perm == PermSearch
+		}
 	}
 	return false
 }
@@ -112,6 +123,21 @@ type ctxKey struct{}
 func FromContext(ctx context.Context) *Principal {
 	p, _ := ctx.Value(ctxKey{}).(*Principal)
 	return p
+}
+
+// NewContext returns ctx carrying p as the authenticated caller, as Require
+// does, for code that runs a handler on a caller's behalf.
+func NewContext(ctx context.Context, p *Principal) context.Context {
+	return context.WithValue(ctx, ctxKey{}, p)
+}
+
+// GenerateAgentKey returns a new random AI agent token and its storage hash.
+func GenerateAgentKey() (plaintext, hash string, err error) {
+	plaintext, err = randomToken(AgentKeyPrefix)
+	if err != nil {
+		return "", "", err
+	}
+	return plaintext, hashToken(plaintext), nil
 }
 
 // GenerateKey returns a new random key and its storage hash.
