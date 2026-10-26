@@ -167,6 +167,7 @@ jobs:
               "nvidia/nemotron-3-ultra-550b-a55b",
               "z-ai/glm-5.3-flash",
               "meta/muse-glimmer-30b",
+              "deepseek-ai/deepseek-v4.1-flash",
           ]
 
           print(f"Querying {len(ANALYZER_MODELS)} analyzer models in parallel...")
@@ -239,7 +240,7 @@ jobs:
               "---\n"
               "*Consolidated by `nvidia/nemotron-3.5-bolt-e4b` from independent analyses by "
               "`nvidia/nemotron-3.5-super-vl-120b-a12b`, `nvidia/nemotron-3.5-lightning-30b-a3b`, "
-              "`nvidia/nemotron-3-ultra-550b-a55b`, `z-ai/glm-5.3-flash`, and `meta/muse-glimmer-30b`.*"
+              "`nvidia/nemotron-3-ultra-550b-a55b`, `z-ai/glm-5.3-flash`, `meta/muse-glimmer-30b`, and `deepseek-ai/deepseek-v4.1-flash`.*"
           )
 
           with open("review_comment.md", "w", encoding="utf-8") as out:
