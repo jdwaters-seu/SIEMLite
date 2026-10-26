@@ -8,7 +8,7 @@ import (
 )
 
 // schemaVersion is stored in PRAGMA user_version.
-const schemaVersion = 16
+const schemaVersion = 17
 
 // schemaStatements is the idempotent DDL applied on startup.
 //
@@ -295,6 +295,19 @@ var upgrades = map[int][]string{
 	// than a number within a time) as well as rules that match events.
 	15: {
 		`ALTER TABLE alert_rules ADD COLUMN kind TEXT NOT NULL DEFAULT 'match' CHECK (kind IN ('match', 'volume_over', 'volume_under'))`,
+	},
+	// v17: tokens for AI agents that connect to SIEMLite's MCP endpoint. Only
+	// a hash of each token is kept.
+	16: {
+		`CREATE TABLE IF NOT EXISTS agent_tokens (
+			id           INTEGER PRIMARY KEY AUTOINCREMENT,
+			name         TEXT NOT NULL UNIQUE COLLATE NOCASE,
+			level        TEXT NOT NULL CHECK (level IN ('read', 'analyst', 'admin')),
+			key_hash     TEXT NOT NULL UNIQUE,
+			created_by   TEXT NOT NULL DEFAULT '',
+			created_at   INTEGER NOT NULL,
+			last_used_at INTEGER
+		)`,
 	},
 }
 

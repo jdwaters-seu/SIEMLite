@@ -195,7 +195,7 @@ func TestIntegrationsAPI(t *testing.T) {
 		}
 		return card{}
 	}
-	if got := e.call(root, "GET", "/api/v1/integrations", nil, &list, nil); got != 200 || len(list.Integrations) != 3 {
+	if got := e.call(root, "GET", "/api/v1/integrations", nil, &list, nil); got != 200 || len(list.Integrations) != 4 { // email, Microsoft, AI Parsers and AI agents
 		t.Fatalf("list = %d %+v", got, list)
 	}
 	if c := emailCard(list.Integrations); c.ID != "email" || c.Name != "Email" || c.State != "needs_setup" || c.Description == "" {

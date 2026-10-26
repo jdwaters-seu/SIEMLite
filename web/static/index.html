@@ -1026,6 +1026,34 @@
           </form>
         </div>
       </section>
+      <section class="panel integ" id="int-mcp" data-integration="mcp" aria-labelledby="int-mcp-title">
+        <div class="integ-head">
+          <div class="integ-title"><h2 id="int-mcp-title">AI agents (MCP)</h2><span class="pill integ-state">…</span></div>
+          <p class="hint integ-summary">Let AI agents search logs, read alerts and make changes through the Model Context Protocol.</p>
+          <div class="integ-controls">
+            <label class="switch integ-switch"><span>On</span><input type="checkbox" disabled><span class="track"></span></label>
+            <button class="btn integ-toggle" type="button" aria-expanded="false" aria-controls="int-mcp-body">Set up</button>
+          </div>
+        </div>
+        <div class="integ-body" id="int-mcp-body" hidden>
+          <div class="mail">
+            <p class="hint">Any AI agent that speaks MCP over HTTP can connect to <code id="mcp-url"></code> with a token below. Each token has a level, and every change an agent makes is recorded in the audit log under the token&rsquo;s name. What an agent reads from logs was written by outside systems, so give an agent the lowest level it needs.</p>
+            <ul class="hint mcp-levels" id="mcp-levels"></ul>
+            <div class="table-wrap">
+              <table class="data" id="mcp-tokens">
+                <thead><tr><th>Name</th><th>Level</th><th>Made</th><th>Last used</th><th><span class="visually-hidden">Actions</span></th></tr></thead>
+                <tbody id="mcp-body"></tbody>
+              </table>
+            </div>
+            <form class="mail-actions" id="mcp-form" autocomplete="off">
+              <label class="field-label">Name <input class="input" id="mcp-name" maxlength="60" placeholder="Claude Desktop" spellcheck="false"></label>
+              <label class="field-label">Level <select class="select" id="mcp-level"></select></label>
+              <button class="btn btn-primary" type="submit" id="mcp-create">Make a token</button>
+            </form>
+            <p class="notice" id="mcp-msg" role="status" hidden></p>
+          </div>
+        </div>
+      </section>
     </section>
 
     <!-- Account -->
@@ -1253,6 +1281,24 @@
     </div>
     <p class="hint">SIEMLite&rsquo;s certificate is self-signed unless you supplied your own, so clients must trust <code>siemlite.crt</code>, as the snippets show. With Docker the file is <code>/data/siemlite.crt</code>; copy it out with <code>docker compose cp siemlite:/data/siemlite.crt .</code> and remove the lines about it if the certificate is already trusted.</p>
     <p class="hint">What comes back: <code>202</code> accepted; <code>401</code> the token is wrong or the source is disabled; <code>503</code> busy, so wait <code>Retry-After</code> seconds, then send again.</p>
+    <div class="dialog-actions"><button class="btn btn-primary" value="done">Done</button></div>
+  </form>
+</dialog>
+
+<dialog id="dlg-agent" class="wide">
+  <form method="dialog">
+    <h2 id="ag-title">Connect an agent</h2>
+    <p>This is the only time the token is shown. If it&rsquo;s lost, remove it and make another.</p>
+    <div class="connect-section">
+      <h3>Token</h3>
+      <div class="token-box"><input class="input" id="ag-token" readonly aria-label="Agent token"><button type="button" class="btn" id="ag-token-copy">Copy</button></div>
+    </div>
+    <div class="connect-section">
+      <h3>Connect an agent</h3>
+      <div class="seg code-tabs" role="group" aria-label="Agent" id="ag-tabs"></div>
+      <div id="ag-blocks"></div>
+    </div>
+    <p class="hint">SIEMLite&rsquo;s certificate is self-signed unless you supplied your own, so the agent&rsquo;s computer must trust <code>siemlite.crt</code>.</p>
     <div class="dialog-actions"><button class="btn btn-primary" value="done">Done</button></div>
   </form>
 </dialog>
@@ -3174,7 +3220,7 @@ async function refreshIntegrationCards() {
 async function openIntegrations() {
   notice($("integrations-msg"), "");
   await refreshIntegrationCards();
-  await Promise.all([loadMail(), loadEntra(), loadAI()]);
+  await Promise.all([loadMail(), loadEntra(), loadAI(), loadMCP()]);
 }
 function toggleIntegration(btn, open) {
   const body = $(btn.getAttribute("aria-controls"));
@@ -3193,6 +3239,75 @@ for (const sw of document.querySelectorAll(".integ-switch input")) {
     await refreshIntegrationCards();
   };
 }
+
+// --- AI agents (MCP) ---
+let mcpView = null;
+async function loadMCP() {
+  $("mcp-url").textContent = location.origin + "/mcp";
+  try { mcpView = await apiJSON("/api/v1/integrations/mcp"); } catch (err) { notice($("mcp-msg"), err.message); return; }
+  const label = (id) => (mcpView.levels.find((l) => l.id === id) || { label: id }).label;
+  $("mcp-levels").replaceChildren(...mcpView.levels.map((l) => el("li", {}, el("b", { textContent: l.label }), " " + l.can)));
+  const sel = $("mcp-level");
+  if (!sel.options.length) sel.replaceChildren(...mcpView.levels.map((l) => el("option", { value: l.id, textContent: l.label })));
+  $("mcp-body").replaceChildren(...(mcpView.tokens.length ? mcpView.tokens.map((t) => el("tr", {},
+    el("td", { textContent: t.name }), el("td", { textContent: label(t.level) }),
+    el("td", { className: "muted", textContent: shortDate(t.created_at), title: t.created_by ? "By " + t.created_by : "" }),
+    el("td", { className: "muted", textContent: ago(t.last_used_at) }),
+    el("td", { className: "actions" }, el("div", { className: "row-actions" },
+      el("button", { className: "btn btn-small btn-danger", type: "button", textContent: "Remove", onclick: () => removeAgentToken(t) }))))) :
+    [el("tr", { className: "empty" }, el("td", { colSpan: 5, textContent: "No tokens yet. Make one for each agent." }))]));
+}
+async function removeAgentToken(t) {
+  if (!(await confirmAction(`Remove the token ${t.name}?`, "Any agent using it is refused from now on.", "Remove token"))) return;
+  try { await apiJSON("/api/v1/integrations/mcp/tokens/" + t.id, { method: "DELETE" }); notice($("mcp-msg"), `Removed ${t.name}.`, true); await loadMCP(); refreshIntegrationCards(); }
+  catch (err) { notice($("mcp-msg"), err.message); }
+}
+const AGENT_CLIENTS = [["claude", "Claude Code"], ["gemini", "Gemini CLI"], ["opencode", "OpenCode"], ["other", "Other"]];
+// How to connect each agent, as one or more blocks of text to copy.
+function agentSnippets(url, token) {
+  const bearer = "Bearer " + token, pretty = (o) => JSON.stringify(o, null, 2);
+  return {
+    claude: [["Run this in a terminal.", `claude mcp add --transport http siemlite ${url} --header "Authorization: ${bearer}"`]],
+    gemini: [["Run this in a terminal.", `gemini mcp add --transport http --header "Authorization: ${bearer}" siemlite ${url}`],
+      ["Or add this to Gemini CLI's settings.json.", pretty({ mcpServers: { siemlite: { httpUrl: url, headers: { Authorization: bearer } } } })]],
+    opencode: [["Add this to opencode.json (OpenCode's terminal app reads it when it starts).",
+      pretty({ $schema: "https://opencode.ai/config.json", mcp: { siemlite: { type: "remote", url, enabled: true, headers: { Authorization: bearer } } } })]],
+    other: [["Most MCP clients take a block like this in their settings, with this token as the Authorization header.",
+      pretty({ mcpServers: { siemlite: { type: "http", url, headers: { Authorization: bearer } } } })]],
+  };
+}
+function agentDialog(made) {
+  const url = location.origin + "/mcp", snippets = agentSnippets(url, made.token);
+  $("ag-title").textContent = `Connect ${made.name}`;
+  $("ag-token").value = made.token;
+  $("ag-token-copy").textContent = "Copy"; $("ag-token-copy").onclick = () => copyText($("ag-token-copy"), made.token, $("ag-token"));
+  let chosen = "claude";
+  try { const saved = localStorage.getItem("siemlite.agent-tab"); if (AGENT_CLIENTS.some(([id]) => id === saved)) chosen = saved; } catch {}
+  const pick = (id) => {
+    chosen = id;
+    try { localStorage.setItem("siemlite.agent-tab", id); } catch {}
+    for (const b of $("ag-tabs").children) b.setAttribute("aria-pressed", String(b.dataset.agent === id));
+    $("ag-blocks").replaceChildren(...snippets[id].map(([about, code], i) => {
+      const copy = el("button", { type: "button", className: "btn btn-small", textContent: "Copy", id: "ag-copy-" + i });
+      copy.onclick = () => copyText(copy, code);
+      return el("div", {}, el("div", { className: "code-bar" }, el("p", { textContent: about }), copy), el("pre", { className: "code", id: "ag-code-" + i, tabIndex: 0, textContent: code }));
+    }));
+  };
+  $("ag-tabs").replaceChildren(...AGENT_CLIENTS.map(([id, label]) => el("button", { type: "button", textContent: label, dataset: { agent: id }, onclick: () => pick(id) })));
+  pick(chosen);
+  $("dlg-agent").showModal();
+}
+$("mcp-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const btn = $("mcp-create"); btn.disabled = true;
+  try {
+    const made = await apiJSON("/api/v1/integrations/mcp/tokens", { method: "POST", json: { name: $("mcp-name").value.trim(), level: $("mcp-level").value } });
+    $("mcp-name").value = ""; notice($("mcp-msg"), "");
+    await loadMCP(); refreshIntegrationCards();
+    agentDialog(made);
+  } catch (err) { notice($("mcp-msg"), err.message); }
+  btn.disabled = false;
+};
 
 // --- AI Parsers ---
 let aiView = null, aiProvider = "local", aiService = "openrouter", aiPoll = 0;

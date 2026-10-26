@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"siemlite/pkg/agents"
 	"siemlite/pkg/ai"
 	"siemlite/pkg/alerts"
 	"siemlite/pkg/audit"
@@ -28,6 +29,7 @@ import (
 	"siemlite/pkg/ingest"
 	"siemlite/pkg/integrations"
 	"siemlite/pkg/intel"
+	"siemlite/pkg/mcp"
 	"siemlite/pkg/ocsf"
 	"siemlite/pkg/parser"
 	"siemlite/pkg/retention"
@@ -57,6 +59,7 @@ type Deps struct {
 	Syslog *syslogd.Server // optional
 	Router *sources.Router // per-source parsers (required)
 	AI     *ai.Service     // the AI Parsers integration (optional)
+	Agents *agents.Service // AI agent access over MCP (optional)
 	// Backups, Started and Restart serve the System page (optional).
 	Backups *backup.Manager
 	Started time.Time
@@ -94,6 +97,8 @@ type Server struct {
 	checkMu sync.Mutex
 	checks  map[string]time.Time // reachability checks under way (tlsapi.go)
 
+	mcp *mcp.Server // the MCP tools (mcp.go)
+
 	ssoMu      sync.Mutex
 	ssoFlights map[[sha256.Size]byte]*ssoFlight // Microsoft callbacks lately, by state (entra.go)
 
@@ -122,6 +127,7 @@ func NewServer(addr string, deps Deps) *Server {
 		deps.Logger = slog.Default()
 	}
 	s := &Server{deps: deps}
+	s.mcp = s.mcpServer()
 	s.http = &http.Server{
 		Addr:              addr,
 		Handler:           s.Handler(),
@@ -172,6 +178,12 @@ func (s *Server) Handler() http.Handler {
 	admin("POST /api/v1/parsers/test", s.handleTestParser)
 	admin("POST /api/v1/parsers/draft", s.handleDraftParser)
 	admin("POST /api/v1/parsers/suggest", s.handleSuggestParser)
+	admin("GET /api/v1/integrations/mcp", s.handleGetMCP)
+	admin("POST /api/v1/integrations/mcp/tokens", s.handleCreateMCPToken)
+	admin("DELETE /api/v1/integrations/mcp/tokens/{id}", s.handleDeleteMCPToken)
+	// AI agents authenticate with their own tokens (see mcp.go), not Require.
+	mux.HandleFunc("POST /mcp", s.handleMCP)
+	mux.HandleFunc("GET /mcp", s.handleMCP) // answers 405: agents POST (there is no event stream to open)
 	mux.Handle("GET /api/v1/alerts", a.Require(auth.PermSearch, http.HandlerFunc(s.handleListAlerts)))
 	mux.Handle("PATCH /api/v1/alerts/{id}", a.Require(auth.PermSearch, http.HandlerFunc(s.handleSetAlertStatus)))
 	mux.Handle("GET /api/v1/rules", a.Require(auth.PermSearch, http.HandlerFunc(s.handleListRules)))
@@ -768,6 +780,13 @@ func (s *Server) audit(r *http.Request, e audit.Entry) {
 	}
 	if e.IP == "" {
 		e.IP = s.clientIP(r)
+	}
+	if p != nil && p.Kind == auth.KindAgent { // say it was an AI agent, whatever it did
+		fields := map[string]string{"via": "mcp"}
+		for k, v := range e.Fields {
+			fields[k] = v
+		}
+		e.Fields = fields
 	}
 	s.deps.Audit.Record(r.Context(), e)
 }

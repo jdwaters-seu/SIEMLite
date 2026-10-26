@@ -28,6 +28,7 @@ import (
 	"golang.org/x/term"
 
 	"siemlite/api"
+	"siemlite/pkg/agents"
 	"siemlite/pkg/ai"
 	"siemlite/pkg/alerts"
 	"siemlite/pkg/audit"
@@ -283,6 +284,7 @@ func run() error {
 	}()
 	// AI Parsers: set up on the Integrations page; -ai-url and -ai-model are
 	// its settings until the page saves its own.
+	agentSvc := agents.New(repo)
 	aiSvc := ai.NewService(repo, secret.NewBox(secret.KeyPath(*dbPath)), ai.Defaults{OllamaURL: *aiURL, Model: *aiModel}, slog.Default())
 	wg.Add(1)
 	go func() {
@@ -399,7 +401,7 @@ func run() error {
 	srv := api.NewServer(*addr, api.Deps{
 		DB: db, Repo: repo, Ingest: worker, Search: engine, Retention: cleaner,
 		Auth: authn, Intel: intelSvc, Syslog: syslogSrv, Router: router, AI: aiSvc,
-		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Integrations: integrations.New(emailSvc, entraSvc, aiSvc), Entra: entraSvc, Proxies: proxies, LocalAddr: *localAddr, Certs: certMgr, Audit: auditLog, Alerts: alertEngine,
+		Backups: backups, Started: started, Version: version(), Updates: updates, Email: emailSvc, Agents: agentSvc, Integrations: integrations.New(emailSvc, entraSvc, aiSvc, agentSvc), Entra: entraSvc, Proxies: proxies, LocalAddr: *localAddr, Certs: certMgr, Audit: auditLog, Alerts: alertEngine,
 		Restart: func() {
 			select {
 			case restartCh <- struct{}{}:
